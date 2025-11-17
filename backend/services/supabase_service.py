@@ -48,3 +48,17 @@ def insert_document_record(data: dict):
         traceback.print_exc()
         # Return the data as-is if insertion fails
         return data
+
+def insert_collection_record(data: dict):
+    """Insert collection record into Supabase"""
+    try:
+        supabase = get_supabase()
+        result = (
+            supabase.table("collections")
+            .insert(data)
+            .execute()
+        )
+        return result.data[0] if result.data else data
+    except Exception as e:
+        print(f"ERROR inserting collection: {e}")
+        return data
