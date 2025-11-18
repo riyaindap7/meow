@@ -1,30 +1,42 @@
 # FastAPI & Server
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-python-multipart==0.0.6
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
 
-# Pydantic
-pydantic==2.5.3
-pydantic-settings==2.1.0
+# Pydantic - Use latest versions with pre-built wheels
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
 
 # Milvus Vector Database
-pymilvus==2.3.5
+pymilvus>=2.4.0
 
 # Embedding Model
-sentence-transformers==2.3.1
+sentence-transformers>=3.0.0
 
-transformers==4.36.2
+transformers>=4.45.0
 
 # PDF Processing
 PyPDF2==3.0.1
+pdfplumber>=0.11.0
+PyMuPDF>=1.24.0
+tools>=0.1.9
+marker-pdf>=0.2.0
 
 # HTTP Client (for OpenRouter)
-httpx==0.26.0
+httpx>=0.28.0
 
 # Environment Variables
-python-dotenv==1.0.0
+python-dotenv>=1.0.0
 
-# Optional: Supabase (for future use)
-# supabase==2.3.0
+# MongoDB (replaces Supabase)
+pymongo>=4.6.0
 
-supabase
+# Google Drive API
+google-auth>=2.25.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.110.0
+
+# Web Scraping (for MoE scraper)
+beautifulsoup4>=4.12.0
+lxml>=5.0.0

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
 
 export default function UploadButton() {
   const [uploading, setUploading] = useState(false);
@@ -12,28 +11,42 @@ export default function UploadButton() {
 
     setUploading(true);
 
-    const filePath = `uploads/${Date.now()}-${file.name}`;
+    // Prepare FormData for multipart upload to backend
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("org_id", "TEMP_ORG");
+    formData.append("uploader_id", "TEMP_USER");
+    formData.append("category", "uploads");
 
-    const { data, error } = await supabase.storage
-      .from("documents")
-      .upload(filePath, file);
+    try {
+      const response = await fetch("http://localhost:8000/api/upload/upload-direct", {
+        method: "POST",
+        body: formData,
+      });
 
-    setUploading(false);
+      setUploading(false);
 
-    if (error) {
-      alert("Upload failed: " + error.message);
-      return;
+      if (!response.ok) {
+        const errorData = await response.text();
+        alert("Upload failed: " + errorData);
+        return;
+      }
+
+      const data = await response.json();
+      alert("File uploaded successfully!");
+      console.log("Uploaded:", data);
+    } catch (error) {
+      setUploading(false);
+      alert("Upload failed: " + (error as Error).message);
+      console.error("Upload error:", error);
     }
-
-    alert("File uploaded successfully!");
-    console.log("Uploaded:", data);
   };
 
   return (
     <div className="border p-4 rounded-lg">
       <input
         type="file"
-        accept=".pdf,.doc,.docx"
+        accept=".pdf,.doc,.docx,.zip"
         onChange={uploadFile}
         className="cursor-pointer"
       />
