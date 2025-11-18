@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     
     # API Configuration
     APP_NAME: str = "VICTOR API"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "2.0.0"  # Updated for local storage architecture
     DEBUG: bool = True
     
     # CORS Configuration
@@ -16,9 +16,16 @@ class Settings(BaseSettings):
     MILVUS_HOST: str = "localhost"
     MILVUS_PORT: int = 19530
     
-    # Supabase Configuration
-    SUPABASE_URL: Optional[str] = None
-    SUPABASE_KEY: Optional[str] = None
+    # MongoDB Configuration (replaces Supabase)
+    MONGODB_URI: str = "mongodb://localhost:27017/"
+    MONGODB_DATABASE: str = "victor_rag"
+    
+    # Google Drive Configuration
+    GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE: Optional[str] = None
+    GOOGLE_DRIVE_MASTER_FOLDER_ID: Optional[str] = None
+    
+    # Local Storage Configuration
+    LOCAL_STORAGE_ROOT: str = "backend/data/local_storage"
     
     # OpenRouter Configuration (for LLM)
     OPENROUTER_API_KEY: Optional[str] = None
@@ -26,6 +33,9 @@ class Settings(BaseSettings):
     
     # Embedding Configuration
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
+    
+    # Document Processing Configuration
+    CHUNK_SIZE: int = 1000
     
     class Config:
         env_file = ".env"

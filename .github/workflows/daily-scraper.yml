@@ -1,0 +1,67 @@
+name: Daily MoE Scraper
+
+# Run daily at 2 AM IST (8:30 PM UTC previous day)
+on:
+  schedule:
+    - cron: '30 20 * * *'  # 2:00 AM IST = 8:30 PM UTC
+  
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  scrape-moe:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Create service account credentials file
+        run: |
+          cd backend
+          echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > service-account-key.json
+      
+      - name: Run MoE scraper
+        env:
+          GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE: backend/service-account-key.json
+          GOOGLE_DRIVE_MASTER_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}
+        run: |
+          cd backend
+          python services/moe_scraper_service.py --all
+      
+      - name: Upload scrape report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-report-${{ github.run_number }}
+          path: backend/scrape_report_*.json
+          retention-days: 30
+      
+      - name: Cleanup credentials
+        if: always()
+        run: |
+          rm -f backend/service-account-key.json
+      
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Daily MoE Scraper Failed',
+              body: 'The daily MoE scraper workflow failed. Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.',
+              labels: ['scraper', 'automated']
+            })

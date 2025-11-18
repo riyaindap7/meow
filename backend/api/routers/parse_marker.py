@@ -6,14 +6,11 @@ import tempfile
 from pathlib import Path
 import json
 import uuid
-from backend.services.supabase_storage import download_bytes_from_storage, upload_bytes_to_storage
-from backend.services.supabase_service import insert_document_record  # optional: to update record
+from backend.services.local_storage_service import get_file_path, save_file, create_processed_folder
+from backend.services.mongodb_service import insert_document, update_document, find_document
 import fitz  # PyMuPDF
 
 router = APIRouter()
-
-DOCUMENTS_BUCKET = "documents"        # or use env var
-IMAGES_BUCKET = "documents-images"    # or use env var
 
 async def run_marker_and_get_json(pdf_path: Path, output_format: str = "json", use_llm: bool = False):
     out_dir = pdf_path.parent / "marker_out"
@@ -73,59 +70,82 @@ def extract_and_save_figures(pdf_path: Path, marker_json: dict, temp_dir: Path):
     doc.close()
     return saved
 
-async def upload_extracted_images(saved_list, images_bucket=IMAGES_BUCKET):
+async def save_extracted_images(saved_list, doc_id: str):
+    """Save extracted images to processed folder"""
     results = []
+    processed_folder = create_processed_folder(doc_id)
+    
     for item in saved_list:
         local_path = Path(item["local_path"])
-        remote_name = f"{local_path.name}"
-        content = local_path.read_bytes()
-        # upload blocking -> run in thread
-        def _upload():
-            return upload_bytes_to_storage(images_bucket, remote_name, content, content_type="image/png")
-        try:
-            res = await asyncio.to_thread(_upload)
-            results.append({"local": str(local_path), "remote": remote_name, "upload_res": str(res)})
-        except Exception as e:
-            results.append({"local": str(local_path), "error": str(e)})
+        # Move to processed folder
+        dest_path = processed_folder / local_path.name
+        local_path.replace(dest_path)
+        
+        results.append({
+            "local": str(dest_path),
+            "filename": local_path.name,
+            "page": item.get("page"),
+            "bbox": item.get("bbox")
+        })
     return results
 
 @router.post("/parse-and-extract")
-async def parse_and_extract(remote_path: str, background: bool = False, use_llm: bool = False, bg: BackgroundTasks = None):
+async def parse_and_extract(document_id: str, background: bool = False, use_llm: bool = False, bg: BackgroundTasks = None):
     """
     Args:
-      remote_path: path in storage you saved earlier (e.g. uuid_filename.pdf)
-      background: if true, processing runs but returns 202 immediately (not implemented full queue here)
+      document_id: MongoDB document ID
+      background: if true, processing runs but returns 202 immediately
     """
-    # 1. Download pdf bytes
+    # 1. Get document from MongoDB
+    doc = find_document({"_id": document_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    local_path = doc.get("local_path")
+    if not local_path or not Path(local_path).exists():
+        raise HTTPException(status_code=404, detail="Local file not found")
+    
+    # 2. Read PDF file
     try:
-        pdf_bytes = await asyncio.to_thread(download_bytes_from_storage, DOCUMENTS_BUCKET, remote_path)
+        pdf_path = Path(local_path)
+        pdf_bytes = pdf_path.read_bytes()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed download: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {e}")
 
-    # write to temp file
+    # write to temp file for marker processing
     td = Path(tempfile.mkdtemp())
-    pdf_path = td / "input.pdf"
-    pdf_path.write_bytes(pdf_bytes)
+    temp_pdf_path = td / "input.pdf"
+    temp_pdf_path.write_bytes(pdf_bytes)
 
-    # Optionally run in background tasks (simple)
+    # Optionally run in background tasks
     async def _process():
         try:
-            marker_json = await run_marker_and_get_json(pdf_path, output_format="json", use_llm=use_llm)
-            saved = extract_and_save_figures(pdf_path, marker_json, td)
-            upload_results = await upload_extracted_images(saved)
-            # Option: update DB record with parsed content path / images metadata
+            marker_json = await run_marker_and_get_json(temp_pdf_path, output_format="json", use_llm=use_llm)
+            saved = extract_and_save_figures(temp_pdf_path, marker_json, td)
+            image_results = await save_extracted_images(saved, document_id)
+            
+            # Update MongoDB record with parsed content
             try:
-                insert_document_record({
-                    "file_path": remote_path,
-                    "parsed_json": marker_json,
-                    "extracted_images": upload_results,
-                    "status": "parsed"
-                })
-            except Exception:
-                # optional: ignore DB update failure
-                pass
+                processed_folder = create_processed_folder(document_id)
+                parsed_json_path = processed_folder / "parsed.json"
+                parsed_json_path.write_text(json.dumps(marker_json, indent=2))
+                
+                images_json_path = processed_folder / "images.json"
+                images_json_path.write_text(json.dumps(image_results, indent=2))
+                
+                update_document(
+                    {"_id": document_id},
+                    {
+                        "status": "parsed",
+                        "parsed_json_local_path": str(parsed_json_path),
+                        "images_local_path": str(processed_folder),
+                        "chunk_count": len(marker_json.get("blocks", []))
+                    }
+                )
+            except Exception as e:
+                print(f"Error updating MongoDB: {e}")
         finally:
-            # cleanup local temp files (optional)
+            # cleanup temp files
             for p in td.iterdir():
                 try:
                     p.unlink()
@@ -138,9 +158,9 @@ async def parse_and_extract(remote_path: str, background: bool = False, use_llm:
         return {"status": "done"}
 
     if background:
-        # schedule background processing quickly and return 202
+        # schedule background processing
         bg.add_task(asyncio.create_task, _process())
-        return {"status": "accepted", "remote_path": remote_path}
+        return {"status": "accepted", "document_id": document_id}
     else:
         result = await _process()
-        return {"status": "ok", "remote_path": remote_path, "result": result}
+        return {"status": "ok", "document_id": document_id, "result": result}

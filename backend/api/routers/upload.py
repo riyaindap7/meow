@@ -1,6 +1,6 @@
 # backend/api/routers/upload.py
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from pathlib import Path
 import tempfile
@@ -15,29 +15,36 @@ import os
 import shutil
 import re
 import mimetypes
+from pymongo.errors import DuplicateKeyError
 
 # services
-from backend.services.supabase_service import (
-    insert_document_record,
-    insert_collection_record,
-    get_supabase
+from backend.services.mongodb_service import (
+    insert_document,
+    insert_collection,
+    find_documents,
+    update_document
 )
-from backend.services.supabase_storage import download_bytes_from_storage, upload_bytes_to_storage
+from backend.services.local_storage_service import (
+    save_file,
+    get_file_path,
+    create_processed_folder,
+    save_processed_data,
+    compute_bytes_hash
+)
 
 router = APIRouter()
 
 class UploadCallback(BaseModel):
-    file_path: str         # remote storage path (supabase)
+    file_path: str         # local storage path
     filename: str
     mime_type: str
     file_size: int
     org_id: str = ""
     uploader_id: str = ""
+    category: str = "uploads"  # category folder
 
-# Config (make env vars if you prefer)
-DOCUMENTS_BUCKET = "documents"
-PARSED_BUCKET = "documents-parsed"
-IMAGES_BUCKET = "documents-images"
+# Config
+LOCAL_STORAGE_ROOT = Path("backend/data/local_storage")
 LOCAL_PROCESSED_ROOT = Path("backend/data/processed")
 
 # ----------------- sync helper functions (run in threads) -----------------
@@ -118,31 +125,68 @@ def reflow_paragraphs(text: str, maxlen: int = 1000) -> str:
     return "\n\n".join(paragraphs)
 
 
+# ----------------- direct upload endpoint -----------------
+@router.post("/upload-direct")
+async def upload_file_direct(
+    file: UploadFile,
+    org_id: str = Form(""),
+    uploader_id: str = Form(""),
+    category: str = Form("uploads")
+):
+    """
+    Direct file upload endpoint that:
+    1) Receives file bytes from frontend
+    2) Saves to local storage
+    3) Triggers processing flow
+    """
+    # Read file bytes
+    file_bytes = await file.read()
+    
+    # Save to local storage
+    saved_path = save_file(file_bytes, category, file.filename)
+    
+    # Compute hash
+    file_hash = compute_bytes_hash(file_bytes)
+    
+    # Prepare callback data
+    callback_data = UploadCallback(
+        file_path=str(saved_path),
+        filename=file.filename,
+        mime_type=file.content_type or "application/octet-stream",
+        file_size=len(file_bytes),
+        org_id=org_id,
+        uploader_id=uploader_id,
+        category=category
+    )
+    
+    # Process the uploaded file using existing callback logic
+    return await upload_callback(callback_data)
+
 # ----------------- main endpoint -----------------
 @router.post("/upload-callback")
 async def upload_callback(data: UploadCallback):
     """
     Flow:
-      - If ZIP: handle ZIP flow (download, re-upload zipUploaded, insert collection,
-                extract, upload extracted files to documents/uploads/, insert document rows)
+      - If ZIP: handle ZIP flow (extract files, save to local storage, insert collection and document records)
       - Else: treat as single file (PDF expected) and run parsing flow:
-          1) download original PDF bytes
-          2) write temp PDF
-          3) extract text & images (in thread)
-          4) create local processed folder and save parsed.json and images.json
-          5) upload parsed.json to PARSED_BUCKET and upload images to IMAGES_BUCKET
-          6) insert DB row with both local and remote paths/metadata
+          1) read file from local storage path
+          2) extract text & images (in thread)
+          3) create local processed folder and save parsed.json and images.json
+          4) insert MongoDB record with local paths and metadata
     """
 
     # --------- ZIP handling branch ----------
     is_zip = (data.mime_type in ["application/zip", "application/x-zip-compressed"]) or data.filename.lower().endswith(".zip")
     if is_zip:
-        # 1) Download ZIP bytes from storage (using your storage helper)
+        # 1) Read ZIP from local storage
         try:
-            zip_bytes = await asyncio.to_thread(download_bytes_from_storage, DOCUMENTS_BUCKET, data.file_path)
+            zip_path = Path(data.file_path)
+            if not zip_path.exists():
+                raise FileNotFoundError(f"ZIP file not found: {data.file_path}")
+            zip_bytes = zip_path.read_bytes()
         except Exception as e:
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Failed to download ZIP from storage: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to read ZIP from local storage: {e}")
 
         # 2) Save temp zip file
         try:
@@ -154,42 +198,22 @@ async def upload_callback(data: UploadCallback):
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Failed to write temp ZIP: {e}")
 
-        # 3) Re-upload original ZIP to documents/zipUploaded/<filename>
-        zip_storage_path = f"zipUploaded/{Path(data.filename).name}"
+        # 3) Insert collection record
         try:
-            await asyncio.to_thread(upload_bytes_to_storage, DOCUMENTS_BUCKET, zip_storage_path, zip_bytes, "application/zip")
-        except Exception as e:
-            traceback.print_exc()
-            # cleanup and fail
-            try:
-                os.remove(tmp_zip_path)
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"Failed to re-upload ZIP to storage: {e}")
-
-        # 4) Optionally remove original uploaded file from storage (best-effort)
-        try:
-            supabase = get_supabase()
-            await asyncio.to_thread(supabase.storage.from_("documents").remove, [data.file_path])
-        except Exception:
-            # not fatal; log and continue
-            traceback.print_exc()
-
-        # 5) Insert collection record
-        try:
-            collection = await asyncio.to_thread(insert_collection_record, {
+            collection = await asyncio.to_thread(insert_collection, {
                 "name": data.filename,
-                "file_path": zip_storage_path,
+                "local_path": data.file_path,
                 "org_id": data.org_id,
-                "uploader_id": data.uploader_id
+                "uploader_id": data.uploader_id,
+                "category": data.category
             })
         except Exception as e:
             traceback.print_exc()
-            collection = {"id": None, "error": str(e)}
+            collection = {"_id": None, "error": str(e)}
 
-        collection_id = collection.get("id")
+        collection_id = collection.get("_id")
 
-        # 6) Extract ZIP into a temp dir
+        # 4) Extract ZIP into a temp dir
         extracted_docs = []
         temp_extract_dir = tempfile.mkdtemp(prefix="upload_extract_")
         try:
@@ -205,19 +229,16 @@ async def upload_callback(data: UploadCallback):
                 pass
             raise HTTPException(status_code=500, detail=f"Failed to extract ZIP: {e}")
 
-        # 7) Walk extracted files and upload & insert records
+        # 5) Walk extracted files and save to local storage & insert records
         try:
             for root, dirs, files in os.walk(temp_extract_dir):
                 for file in files:
                     # skip nested zips by default (safe)
                     if file.lower().endswith(".zip"):
-                        # optionally we could upload nested zips as files, or extract recursively
-                        # for safety we skip recursive extraction here
                         continue
 
                     local_path = os.path.join(root, file)
                     relative_path = os.path.relpath(local_path, temp_extract_dir).replace("\\", "/")
-                    storage_path = f"uploads/{relative_path}"
 
                     try:
                         # read bytes
@@ -229,26 +250,46 @@ async def upload_callback(data: UploadCallback):
                         if not mime_type:
                             mime_type = "application/octet-stream"
 
-                        # upload extracted file
-                        await asyncio.to_thread(upload_bytes_to_storage, DOCUMENTS_BUCKET, storage_path, file_bytes, mime_type)
+                        # save to local storage
+                        saved_path = save_file(file_bytes, data.category, file)
+                        file_hash = compute_bytes_hash(file_bytes)
 
                         # create document record
                         doc_record = {
-                            "collection_id": collection_id,
-                            "file_path": storage_path,
+                            "collection_id": str(collection_id) if collection_id else None,
+                            "local_path": str(saved_path),
                             "filename": file,
+                            "file_hash": file_hash,
+                            "file_size": len(file_bytes),
                             "mime_type": mime_type,
-                            "file_size": os.path.getsize(local_path),
+                            "category": data.category,
                             "org_id": data.org_id,
                             "uploader_id": data.uploader_id,
                             "status": "extracted"
                         }
-                        inserted = await asyncio.to_thread(insert_document_record, doc_record)
-                        extracted_docs.append(inserted)
+                        try:
+                            inserted = await asyncio.to_thread(insert_document, doc_record)
+                            extracted_docs.append(inserted)
+                        except DuplicateKeyError:
+                            # File already exists
+                            from backend.services.mongodb_service import get_document_by_hash
+                            existing = await asyncio.to_thread(get_document_by_hash, file_hash)
+                            if existing:
+                                existing["status_message"] = "File already exists"
+                                extracted_docs.append(existing)
+                            else:
+                                extracted_docs.append({"file": file, "error": "Duplicate file"})
+                        except Exception as e:
+                            traceback.print_exc()
+                            extracted_docs.append({
+                                "file": file,
+                                "local_path": local_path,
+                                "error": str(e)
+                            })
                     except Exception as e:
                         traceback.print_exc()
                         extracted_docs.append({
-                            "file": storage_path,
+                            "file": file,
                             "local_path": local_path,
                             "error": str(e)
                         })
@@ -271,12 +312,15 @@ async def upload_callback(data: UploadCallback):
         }
 
     # --------- NON-ZIP (assume single file, e.g., PDF) ----------
-    # 1) Download file bytes from supabase storage
+    # 1) Read file from local storage
     try:
-        file_bytes = await asyncio.to_thread(download_bytes_from_storage, DOCUMENTS_BUCKET, data.file_path)
+        file_path = Path(data.file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {data.file_path}")
+        file_bytes = file_path.read_bytes()
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to download from storage: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to read from local storage: {e}")
 
     # 2) write file to temp path (use filename from callback)
     try:
@@ -306,10 +350,9 @@ async def upload_callback(data: UploadCallback):
 
     # 4) prepare local processed folder
     uid = uuid.uuid4().hex
-    local_doc_dir = LOCAL_PROCESSED_ROOT / uid
-    local_doc_dir.mkdir(parents=True, exist_ok=True)
+    local_doc_dir = create_processed_folder(uid)
 
-    # Build parsed JSON object (you may instead run Marker and use its JSON here)
+    # Build parsed JSON object
     parsed_json = {
         "file_path": data.file_path,
         "filename": data.filename,
@@ -342,68 +385,39 @@ async def upload_callback(data: UploadCallback):
     images_json_path = local_doc_dir / "images.json"
     images_json_path.write_text(json.dumps(images_meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 5) Upload parsed.json to Supabase Storage (PARSED_BUCKET) and upload images to IMAGES_BUCKET
-    parsed_remote_name = f"parsed/{uid}.json"
-    try:
-        parsed_bytes = parsed_json_path.read_bytes()
-        await asyncio.to_thread(upload_bytes_to_storage, PARSED_BUCKET, parsed_remote_name, parsed_bytes, "application/json")
-    except Exception as e:
-        traceback.print_exc()
-        parsed_remote_name = None
-
-    # upload images and collect remote paths
-    uploaded_images_meta = []
-    for img in images_meta:
-        local_path = Path(img["local_path"])
-        remote_name = f"images/{uid}/{local_path.name}"
-        try:
-            content = local_path.read_bytes()
-            # guess content type by file suffix
-            mime_type, _ = mimetypes.guess_type(local_path)
-            if not mime_type:
-                mime_type = "image/png"
-            await asyncio.to_thread(upload_bytes_to_storage, IMAGES_BUCKET, remote_name, content, mime_type)
-            uploaded_images_meta.append({
-                "page": img["page"],
-                "image_index": img["image_index"],
-                "filename": img["filename"],
-                "local_path": str(local_path),
-                "remote_path": remote_name,
-                "bbox": img.get("bbox")
-            })
-        except Exception as e:
-            traceback.print_exc()
-            uploaded_images_meta.append({
-                "page": img["page"],
-                "image_index": img["image_index"],
-                "filename": img["filename"],
-                "local_path": str(local_path),
-                "remote_path": None,
-                "error": str(e)
-            })
-
-    # 6) Build DB record and insert
+    # 5) Build DB record and insert
+    file_hash = compute_bytes_hash(file_bytes)
     record = {
-        "file_path": data.file_path,
+        "local_path": data.file_path,
         "filename": data.filename,
-        "mime_type": data.mime_type,
+        "file_hash": file_hash,
         "file_size": data.file_size,
+        "mime_type": data.mime_type,
+        "category": data.category,
         "org_id": data.org_id,
         "uploader_id": data.uploader_id,
         "status": "parsed",
-        "parsed_json": parsed_json,                       # JSONB column
-        "parsed_json_remote_path": parsed_remote_name,    # text column
-        "parsed_json_local_path": str(parsed_json_path),  # text column
-        "images": uploaded_images_meta,                    # JSONB column
-        "images_local_path": str(local_doc_dir)           # text column
+        "parsed_json_local_path": str(parsed_json_path),
+        "images_local_path": str(local_doc_dir),
+        "chunk_count": len(text_chunks)
     }
 
     try:
-        inserted = await asyncio.to_thread(insert_document_record, record)
-    except Exception:
+        inserted = await asyncio.to_thread(insert_document, record)
+    except DuplicateKeyError as e:
+        # File already exists - find and return the existing document
+        print(f"Duplicate file detected: {file_hash}")
+        from backend.services.mongodb_service import get_document_by_hash
+        existing_doc = await asyncio.to_thread(get_document_by_hash, file_hash)
+        if existing_doc:
+            inserted = existing_doc
+            inserted["status_message"] = "File already exists in database"
+        else:
+            # Shouldn't happen, but handle gracefully
+            raise HTTPException(status_code=409, detail="Duplicate file detected but could not retrieve existing record")
+    except Exception as e:
         traceback.print_exc()
-        record["db_error"] = "insert failed"
-        inserted = record
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     # Clean up temp file if desired
     try:

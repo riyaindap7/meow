@@ -25,3 +25,15 @@ cd backend && venv\Scripts\activate && python -m uvicorn api.main:app --reload
 ```bash
 cd frontend && npm start
 ```
+
+## API Endpoints
+
+### Trigger Google Drive Sync
+```bash
+POST http://localhost:8000/api/sync/trigger
+```
+
+### Trigger MoE Scraper
+```bash
+POST http://localhost:8000/api/scraper/run
+```
