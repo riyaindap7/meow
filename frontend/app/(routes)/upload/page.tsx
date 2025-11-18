@@ -58,6 +58,7 @@ export default function Upload() {
       setUploading(false);
     }
   }
+}
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50">
