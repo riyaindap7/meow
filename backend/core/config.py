@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     MILVUS_PORT: int = 19530
     
     # MongoDB Configuration (replaces Supabase)
+    # Note: For Docker, this will be mongodb://admin:admin123@mongodb:27017/
     MONGODB_URI: str = "mongodb://localhost:27017/"
     MONGODB_DATABASE: str = "victor_rag"
     
