@@ -33,14 +33,14 @@ jobs:
           type = drive
           scope = drive
           service_account_file = /tmp/service-account-key.json
-          team_drive = 
+          root_folder_id = https://drive.google.com/drive/folders/1nYUczTuBjUoaSa9cucpjQU8zkEojdHBp?usp=sharing
           EOF
           echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/service-account-key.json
       
       - name: Download existing data from shared folder
         run: |
           mkdir -p data/moe
-          rclone sync gdrive:${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }} data/moe -v --drive-shared-with-me
+          rclone sync gdrive: data/moe -v --drive-shared-with-me
       
       - name: Install Python dependencies
         run: |
@@ -56,7 +56,7 @@ jobs:
       
       - name: Upload updated data to shared folder
         run: |
-          rclone sync data/moe gdrive:${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }} -v --drive-shared-with-me
+          rclone sync data/moe gdrive: -v --drive-shared-with-me
       
       - name: Upload scrape report
         if: always()
