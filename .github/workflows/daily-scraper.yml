@@ -21,6 +21,13 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          df -h
+
       - name: Install Rclone
         run: |
           curl https://rclone.org/install.sh | sudo bash
@@ -37,10 +44,12 @@ jobs:
           EOF
           echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/service-account-key.json
       
-      - name: Download existing data from shared folder
+      - name: Download only metadata files
         run: |
-          mkdir -p data/moe
-          rclone sync gdrive: data/moe -v --drive-shared-with-me
+          mkdir -p data/moe/metadata
+          # Only download JSON/CSV metadata files, not PDFs
+          rclone copy gdrive:metadata data/moe/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv"
+
       
       - name: Install Python dependencies
         run: |
@@ -48,15 +57,15 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Run MoE scraper
+      - name: Run MoE scraper (scrape + upload directly to Drive)
         env:
-          LOCAL_DATA_PATH: data/moe
+          RCLONE_REMOTE:gdrive:
         run: |
           python backend/services/moe_scraper_service.py --all
       
-      - name: Upload updated data to shared folder
+      - name: Upload updated metadata
         run: |
-          rclone sync data/moe gdrive: -v --drive-shared-with-me
+          rclone copy data/moe/metadata gdrive:metadata -v --drive-shared-with-me
       
       - name: Upload scrape report
         if: always()
