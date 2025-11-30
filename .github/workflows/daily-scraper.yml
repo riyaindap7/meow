@@ -48,25 +48,23 @@ jobs:
       - name: Download only metadata files
         run: |
           mkdir -p data/moe/metadata
-          # Use the full folder ID directly in the path
-          FOLDER_ID="${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}"
           
-          # List to verify structure
-          echo "Checking Drive structure..."
-          rclone lsd gdrive:$FOLDER_ID -vv --drive-shared-with-me
+          # List accessible folders first
+          echo "Listing accessible Drive folders..."
+          rclone lsd gdrive: --drive-shared-with-me
           
-          # Download metadata from the metadata subfolder
-          rclone copy gdrive:$FOLDER_ID/metadata data/moe/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv" || echo "No metadata files yet"
+          # Try accessing by name path instead of ID
+          echo "Attempting to access moe_data/metadata..."
+          rclone copy "gdrive:moe_data/metadata" data/moe/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv" || echo "No metadata files yet"
 
       - name: Upload updated metadata
         run: |
-          FOLDER_ID="${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}"
-          
           if [ -d "data/moe/metadata" ] && [ "$(ls -A data/moe/metadata)" ]; then
             echo "Uploading metadata files..."
-            rclone copy data/moe/metadata gdrive:$FOLDER_ID/metadata -v --drive-shared-with-me
+            rclone copy data/moe/metadata "gdrive:moe_data/metadata" -v --drive-shared-with-me
           else
             echo "No metadata directory or files to upload"
+          fi
 
       
       - name: Install Python dependencies
@@ -77,13 +75,19 @@ jobs:
       
       - name: Run MoE scraper (scrape + upload directly to Drive)
         env:
-          RCLONE_REMOTE: "gdrive:"
+          RCLONE_REMOTE: "gdrive:moe_data/"
+          GOOGLE_DRIVE_MASTER_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}
         run: |
           python backend/services/moe_scraper_service.py --all
       
       - name: Upload updated metadata
         run: |
-          rclone copy moe_data/metadata gdrive:metadata -v --drive-shared-with-me
+          if [ -d "data/moe/metadata" ] && [ "$(ls -A data/moe/metadata)" ]; then
+            echo "Uploading metadata files..."
+            rclone copy data/moe/metadata "gdrive:moe_data/metadata" -v --drive-shared-with-me
+          else
+            echo "No metadata directory or files to upload"
+          fi
       
       - name: Upload scrape report
         if: always()
