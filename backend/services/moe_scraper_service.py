@@ -105,32 +105,39 @@ class MoEScraperService:
         Initialize scraper service
         
         Args:
-            drive_service: Authenticated Google Drive API service (optional if using rclone)
-            master_folder_id: Google Drive master folder ID (optional if using rclone)
+            drive_service: Authenticated Google Drive API service (optional for rclone mode)
+            master_folder_id: Google Drive master folder ID containing all scrape folders (optional for rclone mode)
         """
         # Rclone setup
         self.rclone_remote = os.getenv('RCLONE_REMOTE', '')
         self.use_rclone = bool(self.rclone_remote)
         
-        # Google Drive API setup (legacy mode)
         self.drive_service = drive_service
         self.master_folder_id = master_folder_id
         
         if drive_service and master_folder_id:
-            # Legacy Drive API mode
+            # Detect and cache the Shared Drive ID
             self.shared_drive_id = self._get_shared_drive_id()
+            
+            # Get the pdfs subfolder ID
+            self.pdfs_folder_id = self._get_pdfs_folder_id()
+            
+            # Cache of existing files in Drive (folder_name -> set of filenames)
             self.existing_files_cache: Dict[str, Set[str]] = {}
+            
+            # Folder ID cache (folder_name -> drive_folder_id)
             self.folder_id_cache: Dict[str, str] = {}
         else:
             # Rclone mode
             self.shared_drive_id = None
+            self.pdfs_folder_id = None
             self.existing_files_cache = {}
             self.folder_id_cache = {}
         
         # HTTP session
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
         
         # Stats
@@ -173,6 +180,82 @@ class MoEScraperService:
             print(f"Error detecting Shared Drive: {e}")
             return None
     
+    def _get_pdfs_folder_id(self) -> Optional[str]:
+        """Get the 'pdfs' subfolder ID from moe_data folder"""
+        if not self.drive_service or not self.master_folder_id:
+            return None
+        
+        try:
+            query = f"name='pdfs' and '{self.master_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            
+            results = self.drive_service.files().list(
+                q=query,
+                fields='files(id, name)',
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if files:
+                pdfs_folder_id = files[0]['id']
+                print(f"✓ Found 'pdfs' folder (ID: {pdfs_folder_id})")
+                return pdfs_folder_id
+            else:
+                # Create pdfs folder if it doesn't exist
+                print("Creating 'pdfs' folder...")
+                file_metadata = {
+                    'name': 'pdfs',
+                    'mimeType': 'application/vnd.google-apps.folder',
+                    'parents': [self.master_folder_id]
+                }
+                
+                folder = self.drive_service.files().create(
+                    body=file_metadata,
+                    fields='id, name',
+                    supportsAllDrives=True
+                ).execute()
+                
+                pdfs_folder_id = folder.get('id')
+                print(f"✓ Created 'pdfs' folder (ID: {pdfs_folder_id})")
+                return pdfs_folder_id
+                
+        except Exception as e:
+            print(f"Error getting/creating 'pdfs' folder: {e}")
+            return None
+    
+    def _create_folder_in_pdfs(self, folder_name: str) -> Optional[str]:
+        """Create a new folder in Google Drive pdfs folder"""
+        parent_folder = self.pdfs_folder_id if self.pdfs_folder_id else self.master_folder_id
+        
+        if not self.drive_service or not parent_folder:
+            return None
+        
+        try:
+            file_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder',
+                'parents': [parent_folder]
+            }
+            
+            folder = self.drive_service.files().create(
+                body=file_metadata,
+                fields='id, name',
+                supportsAllDrives=True
+            ).execute()
+            
+            folder_id = folder.get('id')
+            print(f"  ✓ Created folder: {folder_name} (ID: {folder_id})")
+            
+            # Cache the new folder ID
+            self.folder_id_cache[folder_name] = folder_id
+            
+            return folder_id
+            
+        except Exception as e:
+            print(f"  Error creating folder '{folder_name}': {e}")
+            return None
+    
     def get_folder_id(self, folder_name: str) -> Optional[str]:
         """
         Get Google Drive folder ID by name
@@ -182,8 +265,11 @@ class MoEScraperService:
         if folder_name in self.folder_id_cache:
             return self.folder_id_cache[folder_name]
         
+        # Use pdfs_folder_id instead of master_folder_id
+        parent_folder = self.pdfs_folder_id if self.pdfs_folder_id else self.master_folder_id
+        
         try:
-            query = f"name='{folder_name}' and '{self.master_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+            query = f"name='{folder_name}' and '{parent_folder}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
             
             results = self.drive_service.files().list(
                 q=query,
@@ -197,10 +283,12 @@ class MoEScraperService:
             if files:
                 folder_id = files[0]['id']
                 self.folder_id_cache[folder_name] = folder_id
+                print(f"  ✓ Found folder '{folder_name}'")
                 return folder_id
             else:
-                print(f"Warning: Folder '{folder_name}' not found in Drive")
-                return None
+                # Folder doesn't exist, create it
+                print(f"  Folder '{folder_name}' not found in pdfs/, creating...")
+                return self._create_folder_in_pdfs(folder_name)
                 
         except Exception as e:
             print(f"Error getting folder ID for '{folder_name}': {e}")
@@ -212,6 +300,26 @@ class MoEScraperService:
         
         Used to avoid re-uploading duplicates
         """
+        # Rclone mode
+        if self.use_rclone:
+            try:
+                result = subprocess.run([
+                    "rclone", "lsf",
+                    f"{self.rclone_remote}pdfs/{folder_id}",
+                    "--drive-shared-with-me"
+                ], capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    files = set(result.stdout.strip().split('\n'))
+                    filenames = {f for f in files if f}  # Remove empty strings
+                    print(f"  Found {len(filenames)} existing files in folder (via rclone)")
+                    return filenames
+                return set()
+            except Exception as e:
+                print(f"Error listing files via rclone: {e}")
+                return set()
+        
+        # Google Drive API mode
         try:
             query = f"'{folder_id}' in parents and trashed=false"
             
@@ -346,9 +454,48 @@ class MoEScraperService:
         """
         Upload PDF bytes to Google Drive folder
         
+        Args:
+            pdf_bytes: PDF file content as bytes
+            filename: Name of the file
+            folder_id: Folder ID (for Drive API) or folder name (for rclone)
+        
         Returns:
-            Google Drive file ID, or None if failed
+            Google Drive file ID (Drive API) or filename (rclone), or None if failed
         """
+        # Rclone mode
+        if self.use_rclone:
+            try:
+                # Save temporarily
+                temp_path = Path(f"data/moe/temp/{filename}")
+                temp_path.parent.mkdir(parents=True, exist_ok=True)
+                temp_path.write_bytes(pdf_bytes)
+                
+                # Upload via rclone
+                remote_path = f"{self.rclone_remote}pdfs/{folder_id}/{filename}"
+                result = subprocess.run([
+                    "rclone", "copyto", 
+                    str(temp_path), 
+                    remote_path,
+                    "--drive-shared-with-me"
+                ], capture_output=True, text=True)
+                
+                # Clean up temp file
+                temp_path.unlink()
+                
+                if result.returncode == 0:
+                    print(f"    ✓ Uploaded via rclone: {filename}")
+                    return filename
+                else:
+                    print(f"    ⚠️ Rclone upload failed: {result.stderr}")
+                    self.stats["errors"].append(f"Rclone upload error ({filename}): {result.stderr}")
+                    return None
+                    
+            except Exception as e:
+                print(f"    Error uploading {filename} via rclone: {e}")
+                self.stats["errors"].append(f"Rclone upload error ({filename}): {str(e)}")
+                return None
+        
+        # Google Drive API mode
         try:
             # Prepare file metadata
             file_metadata = {
@@ -571,27 +718,23 @@ class MoEScraperService:
         # Upload to Google Drive if rclone is configured
         if self.use_rclone:
             remote_path = f"{self.rclone_remote}{folder}/{filename}"
-            result = subprocess.run([
+            subprocess.run([
                 "rclone", "copyto", 
                 str(local_path), 
                 remote_path,
                 "--drive-shared-with-me"
-            ], capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                # Delete local file to save space
-                local_path.unlink()
-                print(f"    ✓ Uploaded via rclone: {filename}")
-            else:
-                print(f"    ⚠️  Rclone upload failed: {result.stderr}")
+            ])
+            # Delete local file to save space
+            local_path.unlink()
         
         return str(local_path)
     
     def save_metadata(self, data: dict, filename: str):
         """Save metadata JSON"""
-        local_path = Path(f"data/moe/metadata/{filename}")
+        local_path = Path(f"data/metadata/{filename}")
         local_path.parent.mkdir(parents=True, exist_ok=True)
         
+        import json
         with open(local_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         
@@ -601,6 +744,8 @@ class MoEScraperService:
 def create_scraper_service() -> MoEScraperService:
     """
     Factory function to create authenticated MoE scraper service
+    
+    Reads credentials from environment variables
     """
     # Check if using rclone mode (GitHub Actions)
     rclone_remote = os.getenv("RCLONE_REMOTE")
@@ -610,8 +755,11 @@ def create_scraper_service() -> MoEScraperService:
         return MoEScraperService()
     
     # Legacy mode: use Drive API with service account
-    service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE", "backend/service-account-key.json")
+    service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE")
     master_folder_id = os.getenv("GOOGLE_DRIVE_MASTER_FOLDER_ID")
+    
+    if not service_account_file:
+        raise ValueError("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE environment variable not set")
     
     if not master_folder_id:
         raise ValueError("GOOGLE_DRIVE_MASTER_FOLDER_ID environment variable not set")
