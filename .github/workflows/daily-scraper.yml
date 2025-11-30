@@ -40,7 +40,7 @@ jobs:
           type = drive
           scope = drive
           service_account_file = /tmp/service-account-key.json
-          root_folder_id = https://drive.google.com/drive/folders/1nYUczTuBjUoaSa9cucpjQU8zkEojdHBp?usp=sharing
+          root_folder_id = 1nYUczTuBjUoaSa9cucpjQU8zkEojdHBp
           EOF
           echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/service-account-key.json
       
