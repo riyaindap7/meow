@@ -40,17 +40,33 @@ jobs:
           type = drive
           scope = drive
           service_account_file = /tmp/service-account-key.json
-          root_folder_id = 1nYUczTuBjUoaSa9cucpjQU8zkEojdHBp
+          # Don't use root_folder_id - we'll specify full paths instead
           EOF
           echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/service-account-key.json
+
       
       - name: Download only metadata files
         run: |
-          mkdir -p moe_data/metadata
-          # Only download JSON/CSV metadata files, not PDFs
-          rclone lsd gdrive: -vv --drive-shared-with-me 
-          rclone copy gdrive:metadata moe_data/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv" || echo "No metadata files yet"
+          mkdir -p data/moe/metadata
+          # Use the full folder ID directly in the path
+          FOLDER_ID="${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}"
+          
+          # List to verify structure
+          echo "Checking Drive structure..."
+          rclone lsd gdrive:$FOLDER_ID -vv --drive-shared-with-me
+          
+          # Download metadata from the metadata subfolder
+          rclone copy gdrive:$FOLDER_ID/metadata data/moe/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv" || echo "No metadata files yet"
 
+      - name: Upload updated metadata
+        run: |
+          FOLDER_ID="${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}"
+          
+          if [ -d "data/moe/metadata" ] && [ "$(ls -A data/moe/metadata)" ]; then
+            echo "Uploading metadata files..."
+            rclone copy data/moe/metadata gdrive:$FOLDER_ID/metadata -v --drive-shared-with-me
+          else
+            echo "No metadata directory or files to upload"
 
       
       - name: Install Python dependencies
