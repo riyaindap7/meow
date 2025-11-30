@@ -67,7 +67,7 @@ jobs:
       
       - name: Upload updated metadata
         run: |
-          rclone copy data/moe/metadata gdrive:metadata -v --drive-shared-with-me
+          rclone copy moe_data/metadata gdrive:metadata -v --drive-shared-with-me
       
       - name: Upload scrape report
         if: always()
