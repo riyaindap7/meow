@@ -48,7 +48,9 @@ jobs:
         run: |
           mkdir -p moe_data/metadata
           # Only download JSON/CSV metadata files, not PDFs
-          rclone copy gdrive:metadata moe_data/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv"
+          rclone lsd gdrive: -vv --drive-shared-with-me 
+          rclone copy gdrive:metadata moe_data/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv" || echo "No metadata files yet"
+
 
       
       - name: Install Python dependencies
@@ -59,7 +61,7 @@ jobs:
       
       - name: Run MoE scraper (scrape + upload directly to Drive)
         env:
-          RCLONE_REMOTE:gdrive:
+          RCLONE_REMOTE: "gdrive:"
         run: |
           python backend/services/moe_scraper_service.py --all
       
