@@ -46,9 +46,9 @@ jobs:
       
       - name: Download only metadata files
         run: |
-          mkdir -p data/moe/metadata
+          mkdir -p moe_data/metadata
           # Only download JSON/CSV metadata files, not PDFs
-          rclone copy gdrive:metadata data/moe/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv"
+          rclone copy gdrive:metadata moe_data/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv"
 
       
       - name: Install Python dependencies

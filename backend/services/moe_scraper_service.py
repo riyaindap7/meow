@@ -32,6 +32,7 @@ from datetime import datetime
 import json
 import os
 from dotenv import load_dotenv
+import subprocess
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -99,30 +100,37 @@ class MoEScraperService:
         }
     }
     
-    def __init__(self, drive_service, master_folder_id: str):
+    def __init__(self, drive_service=None, master_folder_id: str = None):
         """
         Initialize scraper service
         
         Args:
-            drive_service: Authenticated Google Drive API service
-            master_folder_id: Google Drive master folder ID containing all scrape folders
+            drive_service: Authenticated Google Drive API service (optional if using rclone)
+            master_folder_id: Google Drive master folder ID (optional if using rclone)
         """
+        # Rclone setup
+        self.rclone_remote = os.getenv('RCLONE_REMOTE', '')
+        self.use_rclone = bool(self.rclone_remote)
+        
+        # Google Drive API setup (legacy mode)
         self.drive_service = drive_service
         self.master_folder_id = master_folder_id
         
-        # Detect and cache the Shared Drive ID
-        self.shared_drive_id = self._get_shared_drive_id()
-        
-        # Cache of existing files in Drive (folder_name -> set of filenames)
-        self.existing_files_cache: Dict[str, Set[str]] = {}
-        
-        # Folder ID cache (folder_name -> drive_folder_id)
-        self.folder_id_cache: Dict[str, str] = {}
+        if drive_service and master_folder_id:
+            # Legacy Drive API mode
+            self.shared_drive_id = self._get_shared_drive_id()
+            self.existing_files_cache: Dict[str, Set[str]] = {}
+            self.folder_id_cache: Dict[str, str] = {}
+        else:
+            # Rclone mode
+            self.shared_drive_id = None
+            self.existing_files_cache = {}
+            self.folder_id_cache = {}
         
         # HTTP session
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         
         # Stats
@@ -553,22 +561,63 @@ class MoEScraperService:
         }
         
         return report
+    
+    def save_pdf(self, pdf_content: bytes, filename: str, folder: str = "pdfs"):
+        """Save PDF locally and optionally upload to Drive"""
+        local_path = Path(f"data/moe/{folder}/{filename}")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(pdf_content)
+        
+        # Upload to Google Drive if rclone is configured
+        if self.use_rclone:
+            remote_path = f"{self.rclone_remote}{folder}/{filename}"
+            result = subprocess.run([
+                "rclone", "copyto", 
+                str(local_path), 
+                remote_path,
+                "--drive-shared-with-me"
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Delete local file to save space
+                local_path.unlink()
+                print(f"    ✓ Uploaded via rclone: {filename}")
+            else:
+                print(f"    ⚠️  Rclone upload failed: {result.stderr}")
+        
+        return str(local_path)
+    
+    def save_metadata(self, data: dict, filename: str):
+        """Save metadata JSON"""
+        local_path = Path(f"data/moe/metadata/{filename}")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(local_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        return str(local_path)
 
 
 def create_scraper_service() -> MoEScraperService:
     """
     Factory function to create authenticated MoE scraper service
-    
-    Reads credentials from environment variables
     """
-    service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE")
-    master_folder_id = os.getenv("GOOGLE_DRIVE_MASTER_FOLDER_ID")
+    # Check if using rclone mode (GitHub Actions)
+    rclone_remote = os.getenv("RCLONE_REMOTE")
     
-    if not service_account_file:
-        raise ValueError("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE environment variable not set")
+    if rclone_remote:
+        print("Using rclone mode for Google Drive access")
+        return MoEScraperService()
+    
+    # Legacy mode: use Drive API with service account
+    service_account_file = os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE", "backend/service-account-key.json")
+    master_folder_id = os.getenv("GOOGLE_DRIVE_MASTER_FOLDER_ID")
     
     if not master_folder_id:
         raise ValueError("GOOGLE_DRIVE_MASTER_FOLDER_ID environment variable not set")
+    
+    if not Path(service_account_file).exists():
+        raise ValueError(f"Service account file not found: {service_account_file}")
     
     # Authenticate with Google Drive
     scopes = ['https://www.googleapis.com/auth/drive']
