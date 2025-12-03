@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.core.config import get_settings
-from backend.api.routers import collections, documents, search, chat, upload, sync, scraper
+from backend.api.routers import collections, documents, search, chat, upload, sync, scraper, files_server  # Add files import
 from backend.api.routers.parse_marker import router as parse_marker_router
 
 settings = get_settings()
@@ -13,13 +13,10 @@ app = FastAPI(
 )
 
 # CORS: allow your frontend origins in development
-# CORS: allow your frontend origins in development
+# Add CORS middleware for team access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=["*"],  # In production, specify team member IPs/domains
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -43,6 +40,7 @@ app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(parse_marker_router, prefix="/api/marker", tags=["Marker"])
 app.include_router(sync.router, prefix="/api", tags=["Sync"])
 app.include_router(scraper.router, prefix="/api", tags=["Scraper"])
+app.include_router(files_server.router)  # Add this line
 
 @app.get("/")
 async def root():

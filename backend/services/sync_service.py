@@ -380,3 +380,28 @@ def create_sync_service(drive_folder_id: str = None) -> SyncService:
     
     # Use the default category mapping for existing folder structure
     return SyncService(drive_folder_id)
+
+from fastapi import APIRouter, BackgroundTasks, HTTPException
+
+router = APIRouter()
+
+@router.post("/sync-local-storage")
+async def sync_local_storage(background_tasks: BackgroundTasks):
+    """
+    Sync local storage files to MongoDB
+    
+    Scans all files in local storage and creates MongoDB records
+    """
+    try:
+        from backend.scripts.sync_local_to_mongo import sync_local_storage_to_mongodb
+        
+        # Run in background
+        background_tasks.add_task(sync_local_storage_to_mongodb)
+        
+        return {
+            "status": "started",
+            "message": "Local storage sync started in background"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start sync: {str(e)}")

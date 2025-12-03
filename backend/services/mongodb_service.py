@@ -5,16 +5,32 @@ from pymongo.database import Database
 from pymongo.collection import Collection
 from bson import ObjectId
 from typing import Optional, Dict, List, Any
-import os
 import copy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+import os
+from typing import Optional
+from dotenv import load_dotenv
 
 # Load environment variables
-backend_dir = Path(__file__).parent.parent
-env_file = backend_dir / ".env"
-load_dotenv(env_file)
+load_dotenv()
+
+# MongoDB connection settings
+# Use localhost for connections on the same machine
+MONGO_HOST = os.getenv("MONGO_HOST", "localhost")  # Changed from 192.168.1.100
+MONGO_PORT = int(os.getenv("MONGO_PORT", "27017"))
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "victor_rag")
+MONGO_USER = os.getenv("MONGO_USER", "")
+MONGO_PASSWORD = os.getenv("MONGO_PASSWORD", "")
+
+# Build connection URI
+if MONGO_USER and MONGO_PASSWORD:
+    MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}?authSource=admin"
+else:
+    MONGO_URI = f"mongodb://{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}"
+
+print(f"MongoDB URI: mongodb://{MONGO_HOST}:{MONGO_PORT}/{MONGO_DB_NAME}")
 
 # Lazy initialization
 _mongo_client: Optional[MongoClient] = None
@@ -83,12 +99,22 @@ def prepare_query(query: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_mongo_client() -> MongoClient:
-    """Get MongoDB client singleton"""
+    """Get MongoDB client instance"""
     global _mongo_client
     if _mongo_client is None:
-        mongo_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
-        _mongo_client = MongoClient(mongo_uri)
-        print(f"MongoDB client initialized: {mongo_uri}")
+        try:
+            _mongo_client = MongoClient(
+                MONGO_URI,
+                serverSelectionTimeoutMS=5000,  # 5 seconds timeout
+                connectTimeoutMS=5000,
+                socketTimeoutMS=5000
+            )
+            # Test connection
+            _mongo_client.admin.command('ping')
+            print(f"✅ Connected to MongoDB at {MONGO_HOST}:{MONGO_PORT}")
+        except Exception as e:
+            print(f"❌ Failed to connect to MongoDB: {e}")
+            raise
     return _mongo_client
 
 
