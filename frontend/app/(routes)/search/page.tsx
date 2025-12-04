@@ -48,11 +48,26 @@ export default function Search() {
       if (!response.ok) {
         const errorText = await response.text();
         console.log("Search error:", errorText);
-        try {
-          const errorData = JSON.parse(errorText);
-          setMessage(`Error: ${errorData.detail || "Failed to search"}`);
-        } catch {
-          setMessage(`Error: ${errorText || "Failed to search"}`);
+        
+        // Handle different HTTP status codes
+        if (response.status === 503) {
+          setMessage("❌ Backend service unavailable. Please start the backend server.");
+        } else if (response.status === 500) {
+          try {
+            const errorData = JSON.parse(errorText);
+            setMessage(`❌ Server Error: ${errorData.detail || "Internal server error"}`);
+          } catch {
+            setMessage("❌ Internal server error. Check backend logs for details.");
+          }
+        } else if (response.status === 404) {
+          setMessage("❌ Search endpoint not found. Please check backend is running.");
+        } else {
+          try {
+            const errorData = JSON.parse(errorText);
+            setMessage(`❌ Error (${response.status}): ${errorData.detail || errorText}`);
+          } catch {
+            setMessage(`❌ Error (${response.status}): ${errorText || "Unknown error"}`);
+          }
         }
         setResults([]);
         return;
@@ -70,7 +85,22 @@ export default function Search() {
       }
     } catch (err) {
       console.log("Search error:", err);
-      setMessage("Network error. Please try again.");
+      
+      // Provide specific error messages for common issues
+      if (err instanceof TypeError) {
+        if (err.message.includes("Failed to fetch")) {
+          setMessage("❌ Cannot connect to backend. Is the server running on http://localhost:8000?");
+        } else if (err.message.includes("NetworkError")) {
+          setMessage("❌ Network error: Please check your connection and ensure backend is running");
+        } else {
+          setMessage(`❌ Network Error: ${err.message}`);
+        }
+      } else if (err instanceof Error) {
+        setMessage(`❌ Error: ${err.message}`);
+      } else {
+        setMessage("❌ An unexpected error occurred. Please check the backend logs.");
+      }
+      
       setResults([]);
     } finally {
       setSearching(false);

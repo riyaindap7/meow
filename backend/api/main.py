@@ -17,6 +17,7 @@ from .models import (
     RAGRequest, RAGResponse, HealthResponse
 )
 from services.mongodb_service import find_documents
+from .milvus_client import get_milvus_client
 import json
 
 # Lifespan context manager for startup/shutdown
@@ -26,11 +27,10 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting up API...")
     try:
         get_milvus_client()  # Initialize Milvus connection
-        get_llm_client()     # Initialize OpenRouter client
-        print("✅ All clients initialized")
+        print("✅ Milvus client initialized")
     except Exception as e:
-        print(f"❌ Initialization failed: {e}")
-        raise
+        print(f"⚠️  Milvus initialization warning: {e}")
+        # Don't fail startup, Milvus is optional
     
     yield
     
@@ -75,17 +75,17 @@ async def health_check():
             detail=f"Health check failed: {str(e)}"
         )
 
-# Search endpoint (vector search only)
+# Search endpoint (Milvus vector search)
 @app.post("/search", response_model=SearchResponse)
 async def search(request: QueryRequest):
-    """Search for similar documents"""
+    """Search for documents using vector similarity in Milvus"""
     try:
         milvus_client = get_milvus_client()
         
         # Measure search latency
         start_time = time.time()
         
-        # Perform search
+        # Perform vector search
         results = milvus_client.search(
             query=request.query,
             top_k=request.top_k
@@ -97,7 +97,7 @@ async def search(request: QueryRequest):
         search_results = [
             SearchResult(
                 **result,
-                pdf_url=f"/pdf/{quote(result['source'])}#page={result['page']}"
+                pdf_url=f"/pdf/{quote(result['source'])}"
             ) for result in results
         ]
         
@@ -114,76 +114,22 @@ async def search(request: QueryRequest):
             detail=str(e)
         )
     except Exception as e:
+        import traceback
+        print(f"Search error: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Search failed: {str(e)}"
         )
 
-# RAG endpoint (search + LLM generation)
+# RAG endpoint (currently disabled - requires OpenRouter credits)
 @app.post("/ask", response_model=RAGResponse)
 async def ask(request: RAGRequest):
-    """Ask a question with RAG (Retrieval-Augmented Generation)"""
-    try:
-        milvus_client = get_milvus_client()
-        llm_client = get_llm_client()
-        
-        # Measure total latency
-        total_start = time.time()
-        
-        # Step 1: Retrieve relevant documents
-        search_start = time.time()
-        search_results = milvus_client.search(
-            query=request.query,
-            top_k=request.top_k
-        )
-        search_latency = (time.time() - search_start) * 1000
-        
-        if not search_results:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No relevant documents found"
-            )
-        
-        # Step 2: Generate answer using LLM
-        llm_start = time.time()
-        answer = await llm_client.generate_answer(
-            query=request.query,
-            contexts=search_results,
-            temperature=request.temperature
-        )
-        llm_latency = (time.time() - llm_start) * 1000
-        
-        total_latency = (time.time() - total_start) * 1000
-        
-        # Format response
-        sources = [
-            SearchResult(
-                **result,
-                pdf_url=f"/pdf/{quote(result['source'])}#page={result['page']}"
-            ) for result in search_results
-        ]
-        
-        return RAGResponse(
-            query=request.query,
-            answer=answer,
-            sources=sources,
-            model_used=llm_client.model,
-            search_latency_ms=round(search_latency, 2),
-            llm_latency_ms=round(llm_latency, 2),
-            total_latency_ms=round(total_latency, 2)
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"❌ RAG Error: {str(e)}")
-        print(error_trace)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"RAG failed: {str(e)}"
-        )
+    """Ask a question with RAG (Retrieval-Augmented Generation) - Currently disabled"""
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="RAG endpoint is temporarily disabled. Please purchase OpenRouter credits to enable LLM features."
+    )
 
 # Root endpoint
 @app.get("/")
