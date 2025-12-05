@@ -135,6 +135,11 @@ async def search(request: QueryRequest):
 async def ask(request: RAGRequest):
     """Ask a question with RAG (Retrieval-Augmented Generation)"""
     try:
+        print(f"\n🔵 RAG Request received")
+        print(f"   Query: {request.query}")
+        print(f"   Top K: {request.top_k}")
+        print(f"   Temperature: {request.temperature}")
+        
         milvus_client = get_milvus_client()
         llm_client = get_llm_client()
         

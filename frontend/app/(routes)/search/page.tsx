@@ -59,6 +59,7 @@ export default function Search() {
       if (!response.ok) {
         const errorText = await response.text();
         console.log("Search error:", errorText);
+        console.log("Response status:", response.status);
         
         if (response.status === 503) {
           setMessage("❌ Backend service unavailable. Please start the backend server.");
@@ -68,6 +69,14 @@ export default function Search() {
             setMessage(`❌ Server Error: ${errorData.detail || "Internal server error"}`);
           } catch {
             setMessage("❌ Internal server error. Check backend logs for details.");
+          }
+        } else if (response.status === 422) {
+          try {
+            const errorData = JSON.parse(errorText);
+            console.log("Validation error details:", errorData);
+            setMessage(`❌ Validation Error: ${JSON.stringify(errorData.detail)}`);
+          } catch {
+            setMessage(`❌ Validation Error (422): Invalid request format`);
           }
         } else if (response.status === 404) {
           setMessage("❌ Search endpoint not found. Please check backend is running.");
@@ -96,6 +105,7 @@ export default function Search() {
       if (data.answer) {
         setResults(data);
         setMessage(`✅ Answer generated using ${data.model_used}`);
+        setQuery(""); // Clear input for next query
       } else {
         setResults(null);
         setMessage("No answer generated. Please try again.");

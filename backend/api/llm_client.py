@@ -120,7 +120,21 @@ Answer:"""
                 
                 result = response.json()
                 print(f"🟢 Got result from OpenRouter")
-                answer = result["choices"][0]["message"]["content"]
+                print(f"📊 Response keys: {result.keys()}")
+                
+                # Handle both standard OpenAI format and OpenRouter format
+                if "choices" in result and len(result["choices"]) > 0:
+                    choice = result["choices"][0]
+                    if "message" in choice:
+                        answer = choice["message"]["content"]
+                    elif "text" in choice:
+                        answer = choice["text"]
+                    else:
+                        print(f"🔴 Unexpected choice format: {choice.keys()}")
+                        raise Exception(f"Unexpected response format: {result}")
+                else:
+                    print(f"🔴 No choices in response: {result}")
+                    raise Exception(f"Unexpected response format: {result}")
                 
                 return answer
             except httpx.HTTPStatusError as e:
