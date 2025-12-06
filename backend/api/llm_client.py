@@ -164,6 +164,43 @@ ANSWER:"""
             print(f"❌ Error calling OpenRouter: {str(e)}")
             raise
 
+    def generate(self, prompt: str, temperature: float = 0.0, max_tokens: int = 500) -> str:
+        """
+        Simple synchronous generation for query decomposition
+        (Used by self-query retriever)
+        """
+        try:
+            import httpx
+            
+            # Synchronous HTTP call
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    self.base_url,
+                    headers=self.headers,
+                    json={
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": temperature,
+                        "max_tokens": max_tokens
+                    }
+                )
+            
+            if response.status_code != 200:
+                error_detail = response.text
+                raise Exception(f"OpenRouter API Error ({response.status_code}): {error_detail}")
+            
+            result = response.json()
+            
+            # Extract content from response
+            if "choices" in result and len(result["choices"]) > 0:
+                return result["choices"][0]["message"]["content"]
+            else:
+                raise Exception(f"Unexpected response structure: {result}")
+        
+        except Exception as e:
+            print(f"⚠️ LLM generate() error: {e}")
+            raise
+
 # Global instance
 llm_client = None
 
