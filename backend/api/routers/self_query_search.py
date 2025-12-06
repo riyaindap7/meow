@@ -86,8 +86,9 @@ class SelfQueryRequest(BaseModel):
     """Request model for self-query search"""
     query: str = Field(..., description="Natural language query")
     top_k: Optional[int] = Field(5, description="Number of results to return", ge=1, le=50)
-    enable_llm_decomposition: Optional[bool] = Field(False, description="Use LLM for query decomposition")
+    enable_llm_decomposition: Optional[bool] = Field(True, description="Use LLM for query decomposition")
     verbose: Optional[bool] = Field(True, description="Include decomposition details in response")
+    method: Optional[str] = Field("hybrid", description="Search method: vector, sparse, or hybrid")
 
 
 class CustomFilterRequest(BaseModel):
@@ -95,6 +96,7 @@ class CustomFilterRequest(BaseModel):
     query: str = Field(..., description="Semantic query")
     filters: List[MetadataFilter] = Field(..., description="Metadata filters to apply")
     top_k: Optional[int] = Field(5, description="Number of results to return", ge=1, le=50)
+    method: Optional[str] = Field("hybrid", description="Search method: vector, sparse, or hybrid")
 
 
 class SearchResult(BaseModel):
@@ -141,12 +143,17 @@ async def self_query_search(request: SelfQueryRequest):
     try:
         retriever = get_retriever()
         
+        # Get LLM client for decomposition if enabled
+        from backend.api.llm_client import get_llm_client
+        llm_client = get_llm_client() if request.enable_llm_decomposition else None
+        
         # Perform self-query retrieval
         results, decomposition = retriever.retrieve(
             query=request.query,
             top_k=request.top_k,
-            llm_client=None,  # You can integrate your LLM client here
-            verbose=request.verbose
+            llm_client=llm_client,  # ✅ Pass LLM client for intelligent decomposition
+            verbose=request.verbose,
+            method=request.method
         )
         
         # Build filter expression for response
@@ -191,7 +198,8 @@ async def custom_filter_search(request: CustomFilterRequest):
             query=request.query,
             custom_filters=request.filters,
             top_k=request.top_k,
-            verbose=True
+            verbose=True,
+            method=request.method
         )
         
         return [SearchResult(**r) for r in results]

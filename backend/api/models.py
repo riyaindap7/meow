@@ -1,9 +1,17 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
+
+# ============================================================================
+# QUERY AND SEARCH MODELS (Updated with hybrid search support)
+# ============================================================================
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
     top_k: Optional[int] = Field(3, description="Number of results to retrieve", ge=1, le=10)
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
+        "vector",  # Default to vector for backward compatibility
+        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
+    )
 
 class SearchResult(BaseModel):
     """Individual search result with full VictorText schema"""
@@ -27,11 +35,16 @@ class SearchResponse(BaseModel):
     results: List[SearchResult]
     count: int
     latency_ms: float
+    method: str = "vector"  # Which search method was used
 
 class RAGRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
     top_k: Optional[int] = Field(3, description="Number of context chunks", ge=1, le=10)
     temperature: Optional[float] = Field(0.0, description="LLM temperature", ge=0.0, le=1.0)
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
+        "vector",  # Default to vector for backward compatibility
+        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
+    )
 
 class RAGResponse(BaseModel):
     """RAG response with answer and sources"""
@@ -42,6 +55,7 @@ class RAGResponse(BaseModel):
     search_latency_ms: float
     llm_latency_ms: float
     total_latency_ms: float
+    method: str = "vector"  # Which search method was used
 
 class HealthResponse(BaseModel):
     status: str
@@ -49,12 +63,15 @@ class HealthResponse(BaseModel):
     collection_exists: bool
     total_vectors: int
     embedding_model: str
+    hybrid_enabled: bool = False
+    has_dense_field: Optional[bool] = None
+    has_sparse_field: Optional[bool] = None
+    reranker_enabled: Optional[bool] = None
+    reranker_model: Optional[str] = None
 
 # ============================================================================
-# 1. UPDATE: backend/api/models.py - Add these new models
+# COMPARISON AND RERANKING MODELS (Existing - maintained for compatibility)
 # ============================================================================
-
-# Add these new models to your existing models.py file:
 
 class ComparisonResult(BaseModel):
     """Single result in comparison (shows both vector and rerank scores)"""
@@ -92,6 +109,7 @@ class ComparisonResponse(BaseModel):
     after_reranking: List[ComparisonResult]
     metrics: ComparisonMetrics
     latency_ms: float
+    method: str = "vector"  # Which search method was used for comparison
 
 class RerankRequest(BaseModel):
     """Request for search with optional re-ranking"""
@@ -99,3 +117,7 @@ class RerankRequest(BaseModel):
     top_k: Optional[int] = Field(5, description="Number of results to retrieve", ge=1, le=20)
     use_reranker: Optional[bool] = Field(True, description="Enable re-ranking")
     show_comparison: Optional[bool] = Field(False, description="Return before/after comparison")
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
+        "vector",
+        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
+    )

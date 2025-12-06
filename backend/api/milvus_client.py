@@ -1,10 +1,12 @@
-from pymilvus import connections, Collection, utility
+from pymilvus import connections, Collection, utility, AnnSearchRequest, RRFRanker
 from sentence_transformers import SentenceTransformer, CrossEncoder
+from FlagEmbedding import BGEM3FlagModel
 import os
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Literal, Optional, Tuple
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 class MilvusClient:
     def __init__(self):
@@ -13,17 +15,31 @@ class MilvusClient:
         self.collection_name = os.getenv("MILVUS_COLLECTION", "VictorText")
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
         
-        # Initialize embedding model
-        print(f"Loading embedding model: {self.embedding_model_name}")
+        # Dense embeddings - SentenceTransformer (for backward compatibility)
+        print(f"Loading dense embedding model: {self.embedding_model_name}")
         self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        self.dense_model = self.embedding_model  # Alias
+        
+        # Sparse embeddings - FlagEmbedding (only loaded if hybrid search is used)
+        self._sparse_model = None
         
         # Initialize re-ranker (lazy loading)
         self.reranker_model_name = os.getenv("RERANKER_MODEL")
         self._reranker = None
         self.enable_reranking = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
         
-        # Connect to Milvus
         self.connect()
+    
+    @property
+    def sparse_model(self):
+        """Lazy load sparse model only when needed"""
+        if self._sparse_model is None:
+            print(f"Loading sparse embedding model: {self.embedding_model_name}")
+            self._sparse_model = BGEM3FlagModel(
+                self.embedding_model_name,
+                use_fp16=False
+            )
+        return self._sparse_model
     
     @property
     def reranker(self):
@@ -32,7 +48,7 @@ class MilvusClient:
             print(f"Loading re-ranker model: {self.reranker_model_name}")
             self._reranker = CrossEncoder(self.reranker_model_name)
         return self._reranker
-       
+        
     def connect(self):
         """Connect to Milvus"""
         try:
@@ -41,78 +57,56 @@ class MilvusClient:
         except Exception as e:
             print(f"❌ Failed to connect to Milvus: {e}")
             raise
-   
+    
     def get_collection(self) -> Collection:
         """Get collection instance"""
         if not utility.has_collection(self.collection_name):
             raise ValueError(f"Collection '{self.collection_name}' does not exist")
-       
+        
         collection = Collection(self.collection_name)
         collection.load()
         return collection
-   
+    
     def embed_query(self, query: str) -> List[float]:
-        """Generate embedding for query"""
-        embedding = self.embedding_model.encode(
+        """Generate dense embedding (backward compatible)"""
+        return self.embed_query_dense(query)
+    
+    def embed_query_dense(self, query: str) -> List[float]:
+        """Generate dense embedding using SentenceTransformer"""
+        embedding = self.dense_model.encode(
             [query],
-            normalize_embeddings=False
+            normalize_embeddings=False  # Keep as False for VictorText compatibility
         )
         return embedding[0].tolist()
-   
-    def search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
-        """
-        Search for similar vectors in VictorText collection
-       
-        Args:
-            query: Search query text
-            top_k: Number of results to return
-            filter_expr: Optional Milvus filter expression (e.g., 'document_name == "RUSA_final090913"')
-       
-        Returns:
-            List of matching chunks with metadata
-        """
-        collection = self.get_collection()
-       
-        # Generate query embedding
-        query_embedding = self.embed_query(query)
-       
-        # Search parameters
-        search_params = {
-            "metric_type": "IP",
-            "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
-        }
-       
-        # Output fields matching VictorText schema
-        output_fields = [
-            "document_name",
-            "document_id",
-            "chunk_id",
-            "global_chunk_id",
-            "page_idx",
-            "chunk_index",
-            "section_hierarchy",
-            "heading_context",
-            "text",
-            "char_count",
-            "word_count"
-        ]
-       
-        # Execute search
-        results = collection.search(
-            data=[query_embedding],
-            anns_field="embedding",
-            param=search_params,
-            limit=top_k,
-            expr=filter_expr,
-            output_fields=output_fields
+    
+    def embed_query_sparse(self, query: str) -> Dict[int, float]:
+        """Generate sparse embedding using FlagEmbedding"""
+        output = self.sparse_model.encode(
+            [query],
+            return_dense=False,
+            return_sparse=True,
+            return_colbert_vecs=False
         )
-       
-        # Format results
+        
+        sparse_weights = output['lexical_weights'][0]
+        return {int(k): float(v) for k, v in sparse_weights.items()}
+    
+    def _get_output_fields(self) -> List[str]:
+        """Common output fields for all searches"""
+        return [
+            "document_name", "document_id", "chunk_id", "global_chunk_id",
+            "page_idx", "chunk_index", "section_hierarchy", "heading_context",
+            "text", "char_count", "word_count"
+        ]
+    
+    def _format_results(self, results, use_distance: bool = False) -> List[Dict]:
+        """Format search results"""
         formatted_results = []
         for hits in results:
             for hit in hits:
+                score = float(hit.distance) if use_distance else float(hit.score)
                 formatted_results.append({
-                    "score": float(hit.score),
+                    "score": score,
                     "document_name": hit.entity.get("document_name"),
                     "document_id": hit.entity.get("document_id"),
                     "chunk_id": hit.entity.get("chunk_id"),
@@ -125,8 +119,127 @@ class MilvusClient:
                     "char_count": hit.entity.get("char_count"),
                     "word_count": hit.entity.get("word_count")
                 })
-       
         return formatted_results
+    
+    def search(self, query: str, top_k: int = 5, filter_expr: str = None, 
+               method: Literal["vector", "sparse", "hybrid"] = "vector") -> List[Dict]:
+        """
+        Unified search method (backward compatible with vector-only search)
+        
+        Args:
+            query: Search query text
+            top_k: Number of results
+            filter_expr: Optional Milvus filter expression
+            method: 'vector' (default), 'sparse', or 'hybrid'
+        """
+        if method == "sparse":
+            return self._sparse_search(query, top_k, filter_expr)
+        elif method == "hybrid":
+            return self._hybrid_search(query, top_k, filter_expr)
+        else:
+            return self._vector_search(query, top_k, filter_expr)
+    
+    def _vector_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+        """Dense vector search using HNSW (original method)"""
+        collection = self.get_collection()
+        dense_embedding = self.embed_query_dense(query)
+        
+        search_params = {
+            "metric_type": "IP",
+            "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
+        }
+        
+        # Use "embedding" field for backward compatibility with VictorText
+        anns_field = "embedding" if self._has_field("embedding") else "dense_embedding"
+        
+        results = collection.search(
+            data=[dense_embedding],
+            anns_field=anns_field,
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=self._get_output_fields()
+        )
+        
+        return self._format_results(results)
+    
+    def _sparse_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+        """Sparse vector search using inverted index"""
+        collection = self.get_collection()
+        sparse_embedding = self.embed_query_sparse(query)
+        
+        search_params = {
+            "metric_type": "IP",
+            "params": {"drop_ratio_search": 0.2}
+        }
+        
+        results = collection.search(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=self._get_output_fields()
+        )
+        
+        return self._format_results(results)
+    
+    def _hybrid_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+        """Hybrid search using RRF fusion of dense + sparse"""
+        collection = self.get_collection()
+        
+        # Get both embeddings
+        dense_embedding = self.embed_query_dense(query)
+        sparse_embedding = self.embed_query_sparse(query)
+        
+        # Determine dense field name
+        dense_field = "embedding" if self._has_field("embedding") else "dense_embedding"
+        
+        # Dense search request
+        dense_req = AnnSearchRequest(
+            data=[dense_embedding],
+            anns_field=dense_field,
+            param={
+                "metric_type": "IP",
+                "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
+            },
+            limit=top_k * 2,
+            expr=filter_expr
+        )
+        
+        # Sparse search request
+        sparse_req = AnnSearchRequest(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param={
+                "metric_type": "IP",
+                "params": {"drop_ratio_search": 0.2}
+            },
+            limit=top_k * 2,
+            expr=filter_expr
+        )
+        
+        # RRF Ranker
+        ranker = RRFRanker(k=60)
+        
+        # Execute hybrid search
+        results = collection.hybrid_search(
+            reqs=[dense_req, sparse_req],
+            rerank=ranker,
+            limit=top_k,
+            output_fields=self._get_output_fields()
+        )
+        
+        return self._format_results(results, use_distance=True)
+    
+    def _has_field(self, field_name: str) -> bool:
+        """Check if collection has a specific field"""
+        try:
+            collection = self.get_collection()
+            schema = collection.schema
+            return any(f.name == field_name for f in schema.fields)
+        except:
+            return False
     
     def search_with_rerank(
         self, 
@@ -134,10 +247,11 @@ class MilvusClient:
         top_k: int = 5, 
         filter_expr: str = None,
         rerank_top_n: Optional[int] = None,
-        alpha: float = 0.5  # 50% vector, 50% rerank - BALANCED
+        alpha: float = 0.5,
+        method: Literal["vector", "sparse", "hybrid"] = "vector"
     ) -> List[Dict]:
         """
-        Two-stage retrieval with HYBRID SCORING: Dense vector search + Re-Ranking
+        Two-stage retrieval with HYBRID SCORING: Search + Re-Ranking
         
         Args:
             query: Search query text
@@ -145,7 +259,7 @@ class MilvusClient:
             filter_expr: Optional Milvus filter expression
             rerank_top_n: Number of candidates to retrieve before re-ranking 
             alpha: Weight for re-ranker score (0.0 = all vector, 1.0 = all rerank)
-                  Default 0.5 = balanced hybrid
+            method: Search method - 'vector', 'sparse', or 'hybrid'
         
         Returns:
             Re-ranked list of chunks with hybrid scores
@@ -156,7 +270,7 @@ class MilvusClient:
         else:
             rerank_top_n = max(rerank_top_n, top_k * 2)
         
-        candidates = self.search(query, top_k=rerank_top_n, filter_expr=filter_expr)
+        candidates = self.search(query, top_k=rerank_top_n, filter_expr=filter_expr, method=method)
         
         if not candidates:
             return []
@@ -209,297 +323,22 @@ class MilvusClient:
             # If re-ranking disabled, return original results
             return candidates[:top_k]
     
-    def compare_search_methods(
-        self, 
-        query: str, 
-        top_k: int = 5,
-        filter_expr: str = None,
-        rerank_top_n: Optional[int] = None
-    ) -> Dict:
-        """
-        Compare vector search vs re-ranked search side-by-side
-        
-        Args:
-            query: Search query text
-            top_k: Number of results to show for each method
-            filter_expr: Optional Milvus filter expression
-            rerank_top_n: Candidate pool size for re-ranking
-        
-        Returns:
-            Dictionary with comparison data and statistics
-        """
-        print(f"\n{'='*80}")
-        print(f"🔬 COMPARING: Vector Search vs Re-ranked Search")
-        print(f"{'='*80}")
-        print(f"Query: {query}")
-        print(f"Top-K: {top_k}")
-        print(f"{'='*80}\n")
-        
-        # Get vector-only results
-        vector_results = self.search(query, top_k=top_k, filter_expr=filter_expr)
-        
-        # Get re-ranked results
-        reranked_results = self.search_with_rerank(
-            query, 
-            top_k=top_k, 
-            filter_expr=filter_expr,
-            rerank_top_n=rerank_top_n
-        )
-        
-        # Print side-by-side comparison
-        print("\n📊 SIDE-BY-SIDE COMPARISON\n")
-        
-        for i in range(top_k):
-            print(f"{'─'*80}")
-            print(f"RANK #{i+1}")
-            print(f"{'─'*80}")
-            
-            # Vector search result
-            if i < len(vector_results):
-                v_result = vector_results[i]
-                print(f"\n🔵 VECTOR SEARCH:")
-                print(f"   Score: {v_result['score']:.4f}")
-                print(f"   Document: {v_result['document_name']}")
-                print(f"   Page: {v_result['page_idx']}")
-                print(f"   Chunk ID: {v_result['chunk_id']}")
-                print(f"   Text: {v_result['text'][:150]}...")
-            
-            # Re-ranked result
-            if i < len(reranked_results):
-                r_result = reranked_results[i]
-                print(f"\n🟢 RE-RANKED SEARCH:")
-                print(f"   Rerank Score: {r_result.get('rerank_score', 0):.4f}")
-                print(f"   Vector Score: {r_result.get('vector_score', 0):.4f}")
-                print(f"   Score Delta: {r_result.get('rerank_score', 0) - r_result.get('vector_score', 0):+.4f}")
-                print(f"   Document: {r_result['document_name']}")
-                print(f"   Page: {r_result['page_idx']}")
-                print(f"   Chunk ID: {r_result['chunk_id']}")
-                print(f"   Text: {r_result['text'][:150]}...")
-            
-            print()
-        
-        # Calculate ranking changes
-        print(f"\n{'='*80}")
-        print(f"📈 RANKING ANALYSIS")
-        print(f"{'='*80}\n")
-        
-        # Track which chunks appear in both results
-        vector_chunk_ids = [r['chunk_id'] for r in vector_results]
-        reranked_chunk_ids = [r['chunk_id'] for r in reranked_results]
-        
-        # Calculate overlap
-        overlap = set(vector_chunk_ids) & set(reranked_chunk_ids)
-        overlap_percent = (len(overlap) / top_k) * 100 if top_k > 0 else 0
-        
-        print(f"Results Overlap: {len(overlap)}/{top_k} ({overlap_percent:.1f}%)")
-        print(f"New Results (Re-ranking): {top_k - len(overlap)}")
-        
-        # Show position changes for overlapping results
-        position_changes = []
-        for chunk_id in overlap:
-            v_pos = vector_chunk_ids.index(chunk_id) + 1
-            r_pos = reranked_chunk_ids.index(chunk_id) + 1
-            change = v_pos - r_pos  # Positive = moved up, Negative = moved down
-            position_changes.append({
-                'chunk_id': chunk_id,
-                'vector_rank': v_pos,
-                'rerank_rank': r_pos,
-                'change': change
-            })
-        
-        if position_changes:
-            print(f"\n📊 Position Changes:")
-            position_changes.sort(key=lambda x: abs(x['change']), reverse=True)
-            for pc in position_changes[:5]:  # Show top 5 changes
-                direction = "⬆️" if pc['change'] > 0 else "⬇️" if pc['change'] < 0 else "➡️"
-                print(f"   {direction} Chunk {pc['chunk_id'][:12]}... : Rank {pc['vector_rank']} → {pc['rerank_rank']} ({pc['change']:+d})")
-        
-        # Score statistics
-        if reranked_results:
-            avg_vector_score = sum(r.get('vector_score', 0) for r in reranked_results) / len(reranked_results)
-            avg_rerank_score = sum(r.get('rerank_score', 0) for r in reranked_results) / len(reranked_results)
-            
-            print(f"\n📊 Score Statistics:")
-            print(f"   Avg Vector Score: {avg_vector_score:.4f}")
-            print(f"   Avg Rerank Score: {avg_rerank_score:.4f}")
-            print(f"   Avg Delta: {avg_rerank_score - avg_vector_score:+.4f}")
-        
-        print(f"\n{'='*80}\n")
-        
-        # Return structured comparison data
-        return {
-            "query": query,
-            "top_k": top_k,
-            "vector_results": vector_results,
-            "reranked_results": reranked_results,
-            "overlap_count": len(overlap),
-            "overlap_percent": overlap_percent,
-            "position_changes": position_changes,
-            "new_results_count": top_k - len(overlap)
-        }
-    
-    def compare_before_after_reranking(
-        self, 
-        query: str, 
-        top_k: int = 5,
-        filter_expr: str = None,
-        show_full_text: bool = False
-    ) -> Dict:
-        """
-        Simple before/after comparison: Vector Search → Re-ranking
-        Shows how re-ranking improves the initial vector search results
-        
-        Args:
-            query: Search query text
-            top_k: Number of results to compare
-            filter_expr: Optional Milvus filter expression
-            show_full_text: If True, show full text instead of preview
-        
-        Returns:
-            Dictionary with before/after results and improvement metrics
-        """
-        print(f"\n{'='*100}")
-        print(f"📊 BEFORE vs AFTER RE-RANKING")
-        print(f"{'='*100}")
-        print(f"Query: '{query}'")
-        print(f"{'='*100}\n")
-        
-        # BEFORE: Vector search only
-        print("⏳ Getting initial vector search results...\n")
-        vector_results = self.search(query, top_k=top_k, filter_expr=filter_expr)
-        
-        # AFTER: With re-ranking
-        print("⏳ Applying re-ranker...\n")
-        reranked_results = self.search_with_rerank(
-            query, 
-            top_k=top_k, 
-            filter_expr=filter_expr,
-            rerank_top_n=top_k * 4  # Retrieve 4x candidates for re-ranking
-        )
-        
-        print(f"{'='*100}")
-        print(f"🔵 BEFORE RE-RANKING (Vector Similarity Only)")
-        print(f"{'='*100}\n")
-        
-        for i, result in enumerate(vector_results, 1):
-            text_preview = result['text'] if show_full_text else result['text'][:200] + "..."
-            print(f"#{i} | Score: {result['score']:.4f} | Doc: {result['document_name']} | Page: {result['page_idx']}")
-            print(f"    Text: {text_preview}")
-            print()
-        
-        print(f"\n{'='*100}")
-        print(f"🟢 AFTER RE-RANKING (Re-ranked by Relevance)")
-        print(f"{'='*100}\n")
-        
-        for i, result in enumerate(reranked_results, 1):
-            text_preview = result['text'] if show_full_text else result['text'][:200] + "..."
-            vector_score = result.get('vector_score', 0)
-            rerank_score = result.get('rerank_score', 0)
-            improvement = rerank_score - vector_score
-            
-            print(f"#{i} | Rerank: {rerank_score:.4f} | Vector: {vector_score:.4f} | Δ {improvement:+.4f}")
-            print(f"    Doc: {result['document_name']} | Page: {result['page_idx']}")
-            print(f"    Text: {text_preview}")
-            print()
-        
-        # Calculate metrics
-        vector_chunk_ids = [r['chunk_id'] for r in vector_results]
-        reranked_chunk_ids = [r['chunk_id'] for r in reranked_results]
-        
-        # How many results stayed in top-k
-        overlap = set(vector_chunk_ids) & set(reranked_chunk_ids)
-        
-        # How many new results were promoted
-        new_results = [cid for cid in reranked_chunk_ids if cid not in vector_chunk_ids]
-        
-        # How many old results were demoted
-        demoted_results = [cid for cid in vector_chunk_ids if cid not in reranked_chunk_ids]
-        
-        print(f"{'='*100}")
-        print(f"📈 IMPROVEMENT SUMMARY")
-        print(f"{'='*100}\n")
-        
-        print(f"✅ Results kept in top-{top_k}: {len(overlap)}/{top_k} ({len(overlap)/top_k*100:.0f}%)")
-        print(f"⬆️  New results promoted: {len(new_results)}")
-        print(f"⬇️  Results demoted out of top-{top_k}: {len(demoted_results)}")
-        
-        # Show which results changed
-        if new_results:
-            print(f"\n🆕 NEW RESULTS PROMOTED BY RE-RANKER:")
-            for cid in new_results:
-                idx = reranked_chunk_ids.index(cid)
-                result = reranked_results[idx]
-                print(f"    → Rank #{idx+1}: {result['document_name']} (Page {result['page_idx']}) - Score: {result.get('rerank_score', 0):.4f}")
-        
-        if demoted_results:
-            print(f"\n📉 RESULTS DEMOTED (were in top-{top_k}, now removed):")
-            for cid in demoted_results:
-                idx = vector_chunk_ids.index(cid)
-                result = vector_results[idx]
-                print(f"    → Was Rank #{idx+1}: {result['document_name']} (Page {result['page_idx']}) - Score: {result['score']:.4f}")
-        
-        # Show position changes for results that stayed
-        print(f"\n🔄 POSITION CHANGES (for results that stayed in top-{top_k}):")
-        for cid in overlap:
-            old_rank = vector_chunk_ids.index(cid) + 1
-            new_rank = reranked_chunk_ids.index(cid) + 1
-            change = old_rank - new_rank
-            
-            if change != 0:
-                direction = "⬆️ UP" if change > 0 else "⬇️ DOWN"
-                result = reranked_results[new_rank - 1]
-                print(f"    {direction} {abs(change)} position(s): Rank {old_rank} → {new_rank} | {result['document_name']} (Page {result['page_idx']})")
-        
-        # Score improvements
-        if reranked_results:
-            avg_vector = sum(r.get('vector_score', 0) for r in reranked_results) / len(reranked_results)
-            avg_rerank = sum(r.get('rerank_score', 0) for r in reranked_results) / len(reranked_results)
-            
-            print(f"\n📊 SCORE ANALYSIS:")
-            print(f"    Average Vector Score (BEFORE): {avg_vector:.4f}")
-            print(f"    Average Rerank Score (AFTER):  {avg_rerank:.4f}")
-            print(f"    Average Improvement: {avg_rerank - avg_vector:+.4f} ({(avg_rerank - avg_vector)/avg_vector*100:+.1f}%)")
-        
-        print(f"\n{'='*100}\n")
-        
-        return {
-            "query": query,
-            "top_k": top_k,
-            "before": vector_results,
-            "after": reranked_results,
-            "kept_count": len(overlap),
-            "promoted_count": len(new_results),
-            "demoted_count": len(demoted_results),
-            "avg_score_before": avg_vector if reranked_results else 0,
-            "avg_score_after": avg_rerank if reranked_results else 0,
-            "improvement_percent": ((avg_rerank - avg_vector)/avg_vector*100) if (reranked_results and avg_vector > 0) else 0
-        }
-    
     def get_comparison_data(
         self, 
         query: str, 
         top_k: int = 5,
         filter_expr: str = None,
-        rerank_top_n: Optional[int] = None
+        rerank_top_n: Optional[int] = None,
+        method: Literal["vector", "sparse", "hybrid"] = "vector"
     ) -> Dict:
         """
         Get structured comparison data for API response
-        (Returns data instead of printing to console)
-        
-        Args:
-            query: Search query text
-            top_k: Number of results to compare
-            filter_expr: Optional Milvus filter expression
-            rerank_top_n: Number of candidates for re-ranking
-        
-        Returns:
-            Dictionary with before/after results and metrics
         """
         import time
         start_time = time.time()
         
-        # BEFORE: Vector search only
-        vector_results = self.search(query, top_k=top_k, filter_expr=filter_expr)
+        # BEFORE: Search only
+        search_results = self.search(query, top_k=top_k, filter_expr=filter_expr, method=method)
         
         # AFTER: With re-ranking
         if rerank_top_n is None:
@@ -509,53 +348,56 @@ class MilvusClient:
             query, 
             top_k=top_k, 
             filter_expr=filter_expr,
-            rerank_top_n=rerank_top_n
+            rerank_top_n=rerank_top_n,
+            method=method
         )
         
         # Calculate metrics
-        vector_chunk_ids = [r['chunk_id'] for r in vector_results]
+        search_chunk_ids = [r['chunk_id'] for r in search_results]
         reranked_chunk_ids = [r['chunk_id'] for r in reranked_results]
         
-        overlap = set(vector_chunk_ids) & set(reranked_chunk_ids)
-        new_results = [cid for cid in reranked_chunk_ids if cid not in vector_chunk_ids]
-        demoted_results = [cid for cid in vector_chunk_ids if cid not in reranked_chunk_ids]
+        overlap = set(search_chunk_ids) & set(reranked_chunk_ids)
+        new_results = [cid for cid in reranked_chunk_ids if cid not in search_chunk_ids]
+        demoted_results = [cid for cid in search_chunk_ids if cid not in reranked_chunk_ids]
         
-        avg_vector = sum(r.get('vector_score', r.get('score', 0)) for r in reranked_results) / len(reranked_results) if reranked_results else 0
+        avg_search = sum(r.get('vector_score', r.get('score', 0)) for r in reranked_results) / len(reranked_results) if reranked_results else 0
         avg_rerank = sum(r.get('rerank_score', r.get('score', 0)) for r in reranked_results) / len(reranked_results) if reranked_results else 0
         
-        improvement_percent = ((avg_rerank - avg_vector) / avg_vector * 100) if avg_vector > 0 else 0
+        improvement_percent = ((avg_rerank - avg_search) / avg_search * 100) if avg_search > 0 else 0
         
         latency_ms = (time.time() - start_time) * 1000
         
         return {
             "query": query,
             "top_k": top_k,
-            "before_reranking": vector_results,
+            "before_reranking": search_results,
             "after_reranking": reranked_results,
             "metrics": {
                 "kept_count": len(overlap),
                 "promoted_count": len(new_results),
                 "demoted_count": len(demoted_results),
-                "avg_score_before": round(avg_vector, 4),
+                "avg_score_before": round(avg_search, 4),
                 "avg_score_after": round(avg_rerank, 4),
                 "improvement_percent": round(improvement_percent, 2)
             },
             "latency_ms": round(latency_ms, 2)
         }
     
-    def search_by_document(self, query: str, document_name: str, top_k: int = 5, rerank: bool = False) -> List[Dict]:
+    def search_by_document(self, query: str, document_name: str, top_k: int = 5, 
+                          rerank: bool = False, method: str = "vector") -> List[Dict]:
         """Search within a specific document"""
         filter_expr = f'document_name == "{document_name}"'
         if rerank:
-            return self.search_with_rerank(query, top_k, filter_expr)
-        return self.search(query, top_k, filter_expr)
+            return self.search_with_rerank(query, top_k, filter_expr, method=method)
+        return self.search(query, top_k, filter_expr, method=method)
    
-    def search_by_page(self, query: str, document_name: str, page_idx: int, top_k: int = 3, rerank: bool = False) -> List[Dict]:
+    def search_by_page(self, query: str, document_name: str, page_idx: int, 
+                      top_k: int = 3, rerank: bool = False, method: str = "vector") -> List[Dict]:
         """Search within a specific page of a document"""
         filter_expr = f'document_name == "{document_name}" && page_idx == {page_idx}'
         if rerank:
-            return self.search_with_rerank(query, top_k, filter_expr)
-        return self.search(query, top_k, filter_expr)
+            return self.search_with_rerank(query, top_k, filter_expr, method=method)
+        return self.search(query, top_k, filter_expr, method=method)
    
     def get_chunk_by_id(self, chunk_id: str) -> Dict:
         """Retrieve a specific chunk by chunk_id"""
@@ -563,11 +405,7 @@ class MilvusClient:
        
         results = collection.query(
             expr=f'chunk_id == "{chunk_id}"',
-            output_fields=[
-                "document_name", "document_id", "chunk_id", "global_chunk_id",
-                "page_idx", "chunk_index", "section_hierarchy", "heading_context",
-                "text", "char_count", "word_count"
-            ]
+            output_fields=self._get_output_fields()
         )
        
         if results:
@@ -593,14 +431,12 @@ class MilvusClient:
         """Get list of all unique documents in collection"""
         collection = self.get_collection()
        
-        # Query all document names (Milvus doesn't have distinct, so we get all and deduplicate)
         results = collection.query(
             expr="chunk_index >= 0",
             limit=10000,
             output_fields=["document_name"]
         )
        
-        # Extract unique document names
         documents = list(set(r["document_name"] for r in results))
         return sorted(documents)
    
@@ -613,19 +449,19 @@ class MilvusClient:
             "total_entities": collection.num_entities,
             "schema": {
                 "embedding_dim": 1024,
-                "fields": [
-                    "document_name", "document_id", "chunk_id", "global_chunk_id",
-                    "page_idx", "chunk_index", "section_hierarchy", "heading_context",
-                    "text", "char_count", "word_count"
-                ]
+                "fields": self._get_output_fields()
             }
         }
    
     def health_check(self) -> Dict:
-        """Check Milvus health"""
+        """Check Milvus health and capabilities"""
         try:
             collection = self.get_collection()
             documents = self.list_documents()
+            
+            schema = collection.schema
+            has_sparse = self._has_field("sparse_embedding")
+            has_dense = self._has_field("dense_embedding") or self._has_field("embedding")
            
             return {
                 "milvus_connected": True,
@@ -634,6 +470,9 @@ class MilvusClient:
                 "total_vectors": collection.num_entities,
                 "total_documents": len(documents),
                 "embedding_model": self.embedding_model_name,
+                "has_dense_field": has_dense,
+                "has_sparse_field": has_sparse,
+                "hybrid_enabled": has_dense and has_sparse,
                 "reranker_enabled": self.enable_reranking,
                 "reranker_model": self.reranker_model_name if self.enable_reranking else None
             }
@@ -642,11 +481,14 @@ class MilvusClient:
                 "milvus_connected": False,
                 "collection_exists": False,
                 "total_vectors": 0,
+                "hybrid_enabled": False,
                 "error": str(e)
             }
 
+
 # Global instance
 milvus_client = None
+
 
 def get_milvus_client() -> MilvusClient:
     """Get or create Milvus client singleton"""
@@ -666,11 +508,24 @@ if __name__ == "__main__":
     for key, value in health.items():
         print(f"  {key}: {value}")
    
-    # Simple before/after comparison
     query = "What is RUSA?"
-    comparison = client.compare_before_after_reranking(query, top_k=5)
     
-    # Access improvement metrics
-    print(f"\n💡 Quick Stats:")
-    print(f"   • {comparison['promoted_count']} new results found by re-ranker")
-    print(f"   • {comparison['improvement_percent']:.1f}% score improvement on average")
+    # Test different search methods
+    print("\n🔍 Vector Search:")
+    results = client.search(query, top_k=3, method="vector")
+    for r in results:
+        print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
+    
+    # If hybrid is enabled
+    if health.get('hybrid_enabled'):
+        print("\n🔍 Hybrid Search (RRF):")
+        results = client.search(query, top_k=3, method="hybrid")
+        for r in results:
+            print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
+    
+    # With reranking
+    print("\n🔍 Vector Search + Reranking:")
+    results = client.search_with_rerank(query, top_k=3, method="vector")
+    for r in results:
+        print(f"  [{r['score']:.4f}] Vector: {r.get('vector_score', 0):.4f} | Rerank: {r.get('rerank_score', 0):.4f}")
+        print(f"      {r['text'][:80]}...")
