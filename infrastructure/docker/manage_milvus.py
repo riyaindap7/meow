@@ -2,7 +2,7 @@ from pymilvus import connections, utility, Collection, DataType
 
 def connect_milvus():
     """Connect to Milvus"""
-    connections.connect("default", host="localhost", port="19530")
+    connections.connect("default", host="192.168.0.107", port="19530")
     print("✅ Connected to Milvus")
 
 def list_collections():

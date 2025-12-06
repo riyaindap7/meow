@@ -17,7 +17,7 @@ cd frontend && npm install
 ### Backend
 
 ```bash
-cd backend && venv\Scripts\activate && python -m uvicorn api.main:app --reload
+cd backend && venv\Scripts\activate && python -m uvicorn backend.api.main:app --reload
 ```
 
 ### Frontend

@@ -1,9 +1,13 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 class QueryRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
     top_k: Optional[int] = Field(3, description="Number of results to retrieve", ge=1, le=10)
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
+        "hybrid", 
+        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
+    )
 
 class SearchResult(BaseModel):
     """Individual search result with full VictorText schema"""
@@ -11,7 +15,6 @@ class SearchResult(BaseModel):
     source: str
     page: int
     score: float
-    # VictorText schema fields
     document_id: Optional[str] = None
     chunk_id: Optional[str] = None
     global_chunk_id: Optional[str] = None
@@ -27,11 +30,16 @@ class SearchResponse(BaseModel):
     results: List[SearchResult]
     count: int
     latency_ms: float
+    method: str = "hybrid"
 
 class RAGRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
     top_k: Optional[int] = Field(3, description="Number of context chunks", ge=1, le=10)
     temperature: Optional[float] = Field(0.0, description="LLM temperature", ge=0.0, le=1.0)
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
+        "hybrid", 
+        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
+    )
 
 class RAGResponse(BaseModel):
     """RAG response with answer and sources"""
@@ -42,6 +50,7 @@ class RAGResponse(BaseModel):
     search_latency_ms: float
     llm_latency_ms: float
     total_latency_ms: float
+    method: str = "hybrid"
 
 class HealthResponse(BaseModel):
     status: str
@@ -49,3 +58,4 @@ class HealthResponse(BaseModel):
     collection_exists: bool
     total_vectors: int
     embedding_model: str
+    hybrid_enabled: bool = False

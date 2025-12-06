@@ -16,39 +16,33 @@ from .models import (
     QueryRequest, SearchResponse, SearchResult,
     RAGRequest, RAGResponse, HealthResponse
 )
-from backend.services.mongodb_service import find_documents
 from .milvus_client import get_milvus_client
 from .llm_client import get_llm_client
-import json
 
-# Lifespan context manager for startup/shutdown
+# Lifespan context manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     print("🚀 Starting up API...")
     try:
-        get_milvus_client()  # Initialize Milvus connection
+        get_milvus_client()
         print("✅ Milvus client initialized")
     except Exception as e:
         print(f"⚠️  Milvus initialization warning: {e}")
-        # Don't fail startup, Milvus is optional
     
     try:
-        get_llm_client()  # Initialize OpenRouter client
+        get_llm_client()
         print("✅ LLM client (OpenRouter) initialized")
     except Exception as e:
         print(f"⚠️  LLM client initialization warning: {e}")
-        # Don't fail startup, LLM is optional
     
     yield
-    
-    # Shutdown
     print("👋 Shutting down API...")
 
 # Create FastAPI app
 app = FastAPI(
     title="PDF RAG API",
-    description="Query PDF documents using vector search and LLM",
+    description="Query PDF documents using vector search, BM25, or hybrid search",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -62,7 +56,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Health check endpoint
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check API and Milvus health"""
@@ -75,7 +68,8 @@ async def health_check():
             milvus_connected=health["milvus_connected"],
             collection_exists=health["collection_exists"],
             total_vectors=health["total_vectors"],
-            embedding_model=milvus_client.embedding_model_name
+            embedding_model=milvus_client.embedding_model_name,
+            hybrid_enabled=health.get("hybrid_enabled", False)
         )
     except Exception as e:
         raise HTTPException(
@@ -83,32 +77,28 @@ async def health_check():
             detail=f"Health check failed: {str(e)}"
         )
 
-# Search endpoint (Milvus vector search)
 @app.post("/search", response_model=SearchResponse)
 async def search(request: QueryRequest):
-    """Search for documents using vector similarity in Milvus"""
+    """Search using vector, BM25, or hybrid method"""
     try:
         milvus_client = get_milvus_client()
-        
-        # Measure search latency
         start_time = time.time()
         
-        # Perform vector search
+        # Use the method from request
         results = milvus_client.search(
             query=request.query,
-            top_k=request.top_k
+            top_k=request.top_k,
+            method=request.method
         )
         
-        search_latency = (time.time() - start_time) * 1000  # Convert to ms
+        search_latency = (time.time() - start_time) * 1000
         
-        # Format response with full VictorText schema
         search_results = [
             SearchResult(
                 text=result.get('text'),
-                source=result.get('document_name'),  # Map document_name to source
+                source=result.get('document_name'),
                 page=result.get('page_idx'),
                 score=result.get('score'),
-                # New VictorText fields
                 document_id=result.get('document_id'),
                 chunk_id=result.get('chunk_id'),
                 global_chunk_id=result.get('global_chunk_id'),
@@ -124,14 +114,12 @@ async def search(request: QueryRequest):
             query=request.query,
             results=search_results,
             count=len(search_results),
-            latency_ms=round(search_latency, 2)
+            latency_ms=round(search_latency, 2),
+            method=request.method
         )
     
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
         import traceback
         print(f"Search error: {str(e)}")
@@ -144,38 +132,31 @@ async def search(request: QueryRequest):
 # RAG endpoint (search + LLM generation)
 @app.post("/ask", response_model=RAGResponse)
 async def ask(request: RAGRequest):
-    """Ask a question with RAG (Retrieval-Augmented Generation)"""
+    """RAG with vector, BM25, or hybrid retrieval"""
     try:
-        print(f"\n🔵 RAG Request received")
-        print(f"   Query: {request.query}")
-        print(f"   Top K: {request.top_k}")
-        print(f"   Temperature: {request.temperature}")
+        print(f"\n🔵 RAG Request: {request.query} | Method: {request.method}")
         
         milvus_client = get_milvus_client()
         llm_client = get_llm_client()
         
-        # Measure total latency
         total_start = time.time()
         
-        # Step 1: Retrieve relevant documents
+        # Retrieve with chosen method
         search_start = time.time()
         search_results = milvus_client.search(
             query=request.query,
-            top_k=request.top_k
+            top_k=request.top_k,
+            method=request.method
         )
         search_latency = (time.time() - search_start) * 1000
         
         if not search_results:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No relevant documents found for your query"
+                detail="No relevant documents found"
             )
         
-        print(f"📚 Found {len(search_results)} relevant documents")
-        
-        # Log retrieved chunks
-        for i, result in enumerate(search_results):
-            print(f"   [{i+1}] {result.get('document_name')} (Page {result.get('page_idx')}, Score: {result.get('score'):.4f})")
+        print(f"📚 Found {len(search_results)} results using {request.method} search")
         
         # Step 2: Generate answer using LLM
         print(f"🤖 Generating answer using model: {llm_client.model}")
@@ -194,17 +175,14 @@ async def ask(request: RAGRequest):
             )
         
         llm_latency = (time.time() - llm_start) * 1000
-        
         total_latency = (time.time() - total_start) * 1000
         
-        # Format response with full VictorText schema
         sources = [
             SearchResult(
                 text=result.get('text'),
                 source=result.get('document_name'),
                 page=result.get('page_idx'),
                 score=result.get('score'),
-                # New VictorText fields
                 document_id=result.get('document_id'),
                 chunk_id=result.get('chunk_id'),
                 global_chunk_id=result.get('global_chunk_id'),
@@ -216,10 +194,7 @@ async def ask(request: RAGRequest):
             ) for result in search_results
         ]
         
-        print(f"✅ RAG response generated successfully")
-        print(f"   Search latency: {search_latency:.2f}ms")
-        print(f"   LLM latency: {llm_latency:.2f}ms")
-        print(f"   Total latency: {total_latency:.2f}ms")
+        print(f"✅ RAG complete | Search: {search_latency:.0f}ms | LLM: {llm_latency:.0f}ms")
         
         return RAGResponse(
             query=request.query,
@@ -228,7 +203,8 @@ async def ask(request: RAGRequest):
             model_used=llm_client.model,
             search_latency_ms=round(search_latency, 2),
             llm_latency_ms=round(llm_latency, 2),
-            total_latency_ms=round(total_latency, 2)
+            total_latency_ms=round(total_latency, 2),
+            method=request.method
         )
     
     except HTTPException:
@@ -249,37 +225,32 @@ async def root():
     """API root"""
     return {
         "message": "PDF RAG API",
-        "version": "1.0.0",
+        "version": "2.0.0",
+        "search_methods": ["vector", "sparse", "hybrid"],
+        "description": {
+            "vector": "Dense semantic search (HNSW)",
+            "sparse": "Lexical search (BGE-M3 sparse weights)",
+            "hybrid": "RRF fusion of dense + sparse (recommended)"
+        },
         "endpoints": {
             "health": "/health",
             "search": "/search",
             "ask": "/ask",
-            "pdf": "/pdf/{filename}#page={page}"
+            "pdf": "/pdf/{filename}"
         }
     }
 
 # PDF serving endpoint
 @app.get("/pdf/{filename}")
 async def serve_pdf(filename: str):
-    """Serve PDF files from the data directory"""
+    """Serve PDF files"""
     try:
-        # Get the project root directory (parent of api folder)
-        api_dir = Path(__file__).parent
-        project_root = api_dir.parent
-        pdf_path = project_root / "data" / filename
+        pdf_path = Path(__file__).parent.parent / "data" / filename
         
-        # Security check: ensure the file is in the data directory
-        if not pdf_path.is_file() or not pdf_path.resolve().is_relative_to(project_root / "data"):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="PDF file not found"
-            )
+        if not pdf_path.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PDF not found")
         
-        return FileResponse(
-            path=str(pdf_path),
-            media_type="application/pdf",
-            filename=filename
-        )
+        return FileResponse(path=str(pdf_path), media_type="application/pdf", filename=filename)
     except HTTPException:
         raise
     except Exception as e:

@@ -43,3 +43,5 @@ lxml>=5.0.0
 
 # Async Support
 aiofiles>=23.2.0
+
+FlagEmbedding

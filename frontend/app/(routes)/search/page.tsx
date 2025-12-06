@@ -19,6 +19,8 @@ interface RAGResponse {
   model_used: string;
 }
 
+type SearchMethod = "vector" | "sparse" | "hybrid";
+
 export default function Search() {
   const { theme } = useTheme();
   const isDark = theme === "dark";
@@ -28,6 +30,13 @@ export default function Search() {
   const [results, setResults] = useState<RAGResponse | null>(null);
   const [message, setMessage] = useState("");
   const [selectedSourceIndex, setSelectedSourceIndex] = useState<number | null>(null);
+  const [method, setMethod] = useState<SearchMethod>("hybrid");
+
+  const methodDescriptions: Record<SearchMethod, string> = {
+    vector: "Dense semantic search using embeddings",
+    sparse: "Lexical search using BGE-M3 sparse weights",
+    hybrid: "Combined dense + sparse with RRF fusion (recommended)",
+  };
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
