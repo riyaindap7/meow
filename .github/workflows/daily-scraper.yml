@@ -21,24 +21,51 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install dependencies
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          df -h
+
+      - name: Install Rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+      
+      - name: Configure Rclone for Google Drive
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf << EOF
+          [gdrive]
+          type = drive
+          scope = drive
+          service_account_file = /tmp/service-account-key.json
+          root_folder_id = https://drive.google.com/drive/folders/1nYUczTuBjUoaSa9cucpjQU8zkEojdHBp?usp=sharing
+          EOF
+          echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > /tmp/service-account-key.json
+      
+      - name: Download only metadata files
+        run: |
+          mkdir -p data/moe/metadata
+          # Only download JSON/CSV metadata files, not PDFs
+          rclone copy gdrive:metadata data/moe/metadata -v --drive-shared-with-me --include "*.json" --include "*.csv"
+
+      
+      - name: Install Python dependencies
         run: |
           cd backend
           pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: Create service account credentials file
-        run: |
-          cd backend
-          echo '${{ secrets.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON }}' > service-account-key.json
-      
-      - name: Run MoE scraper
+      - name: Run MoE scraper (scrape + upload directly to Drive)
         env:
-          GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE: backend/service-account-key.json
-          GOOGLE_DRIVE_MASTER_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_MASTER_FOLDER_ID }}
+          RCLONE_REMOTE:gdrive:
         run: |
-          cd backend
-          python services/moe_scraper_service.py --all
+          python backend/services/moe_scraper_service.py --all
+      
+      - name: Upload updated metadata
+        run: |
+          rclone copy data/moe/metadata gdrive:metadata -v --drive-shared-with-me
       
       - name: Upload scrape report
         if: always()
@@ -51,7 +78,7 @@ jobs:
       - name: Cleanup credentials
         if: always()
         run: |
-          rm -f backend/service-account-key.json
+          rm -f /tmp/service-account-key.json
       
       - name: Notify on failure
         if: failure()
