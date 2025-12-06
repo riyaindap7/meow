@@ -1,12 +1,14 @@
 # backend/services/self_query_retriever.py
 
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Literal
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer
-from pymilvus import Collection, connections
+from FlagEmbedding import BGEM3FlagModel
+from pymilvus import Collection, connections, AnnSearchRequest, RRFRanker
 import os
 import json
 import re
+import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -77,8 +79,9 @@ class QueryDecomposer:
         self.config = config
         self.metadata_fields = config.metadata_fields
         
-        # Patterns for rule-based extraction
-        self.patterns = {
+        # ✅ IMPROVED: Patterns for rule-based extraction
+        # Patterns that should be removed from query (structural)
+        self.structural_patterns = {
             "document_name": [
                 r"(?:in|from|within)\s+(?:document|file|pdf)\s+['\"]?([^'\"]+)['\"]?",
                 r"(?:document|file|pdf)\s+(?:named|called)\s+['\"]?([^'\"]+)['\"]?",
@@ -88,22 +91,31 @@ class QueryDecomposer:
                 r"page\s+(?:number\s+)?(\d+)",
             ],
             "section_hierarchy": [
-                r"(?:in|from|within)\s+(?:section|chapter)\s+['\"]?([^'\"]+)['\"]?",
+                r"(?:in|from|within)\s+(?:section|chapter)\s+([0-9.]+)\b",
             ],
+        }
+        
+        # Patterns that should NOT be removed from query (semantic content)
+        self.semantic_patterns = {
             "heading_context": [
-                r"(?:under|in)\s+(?:heading|title)\s+['\"]?([^'\"]+)['\"]?",
-            ]
+                # Extract ministry/organization names but KEEP in query
+                r"(?:issued by|by|from)\s+(?:the\s+)?([A-Z][^,.;]+(?:Ministry|Department|Board|Commission|Council|Authority|Institute)[^,.;]*)",
+                r"(Ministry|Department|Board|Commission|Council|Authority|Institute)\s+of\s+[A-Z][^,.;]*",
+            ],
         }
     
     def decompose_query_rule_based(self, query: str) -> QueryDecomposition:
         """
-        Rule-based query decomposition using regex patterns
+        ✅ IMPROVED: Rule-based query decomposition
+        - Structural patterns (page, document): EXTRACT and REMOVE
+        - Semantic patterns (ministry names): EXTRACT but KEEP in query
         """
         metadata_filters = []
         cleaned_query = query
+        phrases_to_remove = []
         
-        # Extract metadata filters using patterns
-        for field, patterns in self.patterns.items():
+        # Step 1: Extract STRUCTURAL metadata (and remove from query)
+        for field, patterns in self.structural_patterns.items():
             for pattern in patterns:
                 matches = re.finditer(pattern, query, re.IGNORECASE)
                 for match in matches:
@@ -119,18 +131,42 @@ class QueryDecomposer:
                     # Create filter
                     metadata_filters.append(MetadataFilter(
                         field=field,
-                        operator="==" if field in ["document_name", "section_hierarchy", "heading_context"] else "==",
+                        operator="==",
                         value=value
                     ))
                     
-                    # Remove matched pattern from query
-                    cleaned_query = cleaned_query.replace(match.group(0), "").strip()
+                    # Mark this phrase for removal
+                    phrases_to_remove.append(match.group(0))
         
-        # Clean up the semantic query
+        # Step 2: Extract SEMANTIC metadata (DON'T remove from query)
+        for field, patterns in self.semantic_patterns.items():
+            for pattern in patterns:
+                matches = re.finditer(pattern, query, re.IGNORECASE)
+                for match in matches:
+                    value = match.group(1).strip() if match.lastindex and match.lastindex >= 1 else match.group(0).strip()
+                    
+                    # Add filter with LIKE operator for flexible matching
+                    if value and not any(f.field == field and value in str(f.value) for f in metadata_filters):
+                        metadata_filters.append(MetadataFilter(
+                            field=field,
+                            operator="like",
+                            value=f"%{value}%"
+                        ))
+                    # NOTE: DON'T remove from query!
+        
+        # Step 3: Remove only structural phrases from query
+        for phrase in phrases_to_remove:
+            cleaned_query = cleaned_query.replace(phrase, " ").strip()
+        
+        # Step 4: Clean up whitespace
         cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip()
         
+        # Step 5: Safety check
+        if not cleaned_query or len(cleaned_query.split()) < 2:
+            cleaned_query = query
+        
         return QueryDecomposition(
-            semantic_query=cleaned_query if cleaned_query else query,
+            semantic_query=cleaned_query,
             metadata_filters=metadata_filters,
             original_query=query
         )
@@ -245,8 +281,12 @@ class SelfQueryRetriever:
         
         # Initialize components
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
-        print(f"Loading embedding model: {self.embedding_model_name}")
-        self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        print(f"Loading dense embedding model: {self.embedding_model_name}")
+        self.dense_model = SentenceTransformer(self.embedding_model_name)
+        self.embedding_model = self.dense_model  # Alias for backward compatibility
+        
+        # Sparse model (lazy loading)
+        self._sparse_model = None
         
         # Initialize query decomposer
         self.decomposer = QueryDecomposer(self.config)
@@ -255,6 +295,17 @@ class SelfQueryRetriever:
         self.host = os.getenv("MILVUS_HOST", "localhost")
         self.port = os.getenv("MILVUS_PORT", "19530")
         self.connect()
+    
+    @property
+    def sparse_model(self):
+        """Lazy load sparse model only when needed"""
+        if self._sparse_model is None:
+            print(f"Loading sparse embedding model: {self.embedding_model_name}")
+            self._sparse_model = BGEM3FlagModel(
+                self.embedding_model_name,
+                use_fp16=False
+            )
+        return self._sparse_model
     
     def connect(self):
         """Connect to Milvus"""
@@ -276,12 +327,28 @@ class SelfQueryRetriever:
         return collection
     
     def embed_query(self, query: str) -> List[float]:
-        """Generate embedding for query"""
-        embedding = self.embedding_model.encode(
+        """Generate dense embedding for query (backward compatible)"""
+        return self.embed_query_dense(query)
+    
+    def embed_query_dense(self, query: str) -> List[float]:
+        """Generate dense embedding for query"""
+        embedding = self.dense_model.encode(
             [query],
             normalize_embeddings=False
         )
         return embedding[0].tolist()
+    
+    def embed_query_sparse(self, query: str) -> Dict[int, float]:
+        """Generate sparse embedding for query"""
+        output = self.sparse_model.encode(
+            [query],
+            return_dense=False,
+            return_sparse=True,
+            return_colbert_vecs=False
+        )
+        
+        sparse_weights = output['lexical_weights'][0]
+        return {int(k): float(v) for k, v in sparse_weights.items()}
     
     def build_milvus_filter_expression(self, filters: List[MetadataFilter]) -> Optional[str]:
         """
@@ -345,7 +412,8 @@ class SelfQueryRetriever:
         query: str,
         top_k: Optional[int] = None,
         llm_client=None,
-        verbose: bool = True
+        verbose: bool = True,
+        method: Literal["vector", "sparse", "hybrid"] = "hybrid"
     ) -> Tuple[List[Dict], QueryDecomposition]:
         """
         Main retrieval method with self-querying
@@ -362,7 +430,9 @@ class SelfQueryRetriever:
         top_k = top_k or self.config.top_k
         
         # Step 1: Decompose query
+        decomp_start = time.time()
         decomposition = self.decomposer.decompose(query, llm_client)
+        decomp_time = (time.time() - decomp_start) * 1000
         
         # ✅ ENHANCED LOGGING - Always print original and enhanced query
         print(f"\n{'='*80}")
@@ -370,6 +440,7 @@ class SelfQueryRetriever:
         print(f"{'='*80}")
         print(f"📝 Original Query:  '{decomposition.original_query}'")
         print(f"🎯 Enhanced Query:  '{decomposition.semantic_query}'")
+        print(f"⏱️  Decomposition time: {decomp_time:.2f}ms")
         print(f"{'='*80}")
         
         if verbose:
@@ -382,19 +453,26 @@ class SelfQueryRetriever:
             print(f"{'='*80}\n")
         
         # Step 2: Build Milvus filter expression
+        filter_start = time.time()
         filter_expr = self.build_milvus_filter_expression(decomposition.metadata_filters)
+        filter_time = (time.time() - filter_start) * 1000
         
         if verbose and filter_expr:
-            print(f"🔧 Milvus Filter Expression: {filter_expr}\n")
+            print(f"🔧 Milvus Filter Expression: {filter_expr}")
+            print(f"⏱️  Filter building: {filter_time:.2f}ms\n")
         
-        # Step 3: Perform vector search with filters
+        # Step 3: Perform search with filters (vector/sparse/hybrid)
+        milvus_start = time.time()
         results = self._search_milvus(
             semantic_query=decomposition.semantic_query,
             filter_expr=filter_expr,
-            top_k=top_k
+            top_k=top_k,
+            method=method
         )
+        milvus_time = (time.time() - milvus_start) * 1000
         
         if verbose:
+            print(f"⏱️  Milvus search time: {milvus_time:.2f}ms")
             print(f"✅ Retrieved {len(results)} results\n")
         
         return results, decomposition
@@ -403,15 +481,33 @@ class SelfQueryRetriever:
         self,
         semantic_query: str,
         filter_expr: Optional[str],
+        top_k: int,
+        method: Literal["vector", "sparse", "hybrid"] = "hybrid"
+    ) -> List[Dict]:
+        """
+        Perform search in Milvus with optional filters
+        Supports vector, sparse, or hybrid search
+        """
+        if method == "sparse":
+            return self._sparse_search(semantic_query, filter_expr, top_k)
+        elif method == "hybrid":
+            return self._hybrid_search(semantic_query, filter_expr, top_k)
+        else:
+            return self._vector_search(semantic_query, filter_expr, top_k)
+    
+    def _vector_search(
+        self,
+        semantic_query: str,
+        filter_expr: Optional[str],
         top_k: int
     ) -> List[Dict]:
         """
-        Perform vector search in Milvus with optional filters
+        Dense vector search using HNSW index
         """
         collection = self.get_collection()
         
-        # Generate query embedding
-        query_embedding = self.embed_query(semantic_query)
+        # Generate dense query embedding
+        query_embedding = self.embed_query_dense(semantic_query)
         
         # Search parameters
         search_params = {
@@ -434,12 +530,12 @@ class SelfQueryRetriever:
             "word_count"
         ]
         
-        # Execute search
+        # Execute search on dense_embedding field
         results = collection.search(
             data=[query_embedding],
-            anns_field="embedding",
+            anns_field="dense_embedding",
             param=search_params,
-            limit=top_k * 2 if self.config.rerank else top_k,  # Get more for reranking
+            limit=top_k * 2 if self.config.rerank else top_k,
             expr=filter_expr,
             output_fields=output_fields
         )
@@ -502,12 +598,173 @@ class SelfQueryRetriever:
             print(f"⚠️ Reranking failed: {e}. Using vector scores.")
             return results[:top_k]
     
+    def _sparse_search(
+        self,
+        semantic_query: str,
+        filter_expr: Optional[str],
+        top_k: int
+    ) -> List[Dict]:
+        """
+        Sparse vector search using inverted index
+        """
+        collection = self.get_collection()
+        
+        # Generate sparse query embedding
+        sparse_embedding = self.embed_query_sparse(semantic_query)
+        
+        # Search parameters
+        search_params = {
+            "metric_type": "IP",
+            "params": {"drop_ratio_search": 0.2}
+        }
+        
+        # Output fields
+        output_fields = [
+            "document_name",
+            "document_id",
+            "chunk_id",
+            "global_chunk_id",
+            "page_idx",
+            "chunk_index",
+            "section_hierarchy",
+            "heading_context",
+            "text",
+            "char_count",
+            "word_count"
+        ]
+        
+        # Execute sparse search
+        results = collection.search(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param=search_params,
+            limit=top_k * 2 if self.config.rerank else top_k,
+            expr=filter_expr,
+            output_fields=output_fields
+        )
+        
+        # Format results
+        formatted_results = []
+        for hits in results:
+            for hit in hits:
+                formatted_results.append({
+                    "score": float(hit.score),
+                    "document_name": hit.entity.get("document_name"),
+                    "document_id": hit.entity.get("document_id"),
+                    "chunk_id": hit.entity.get("chunk_id"),
+                    "global_chunk_id": hit.entity.get("global_chunk_id"),
+                    "page_idx": hit.entity.get("page_idx"),
+                    "chunk_index": hit.entity.get("chunk_index"),
+                    "section_hierarchy": hit.entity.get("section_hierarchy"),
+                    "heading_context": hit.entity.get("heading_context"),
+                    "text": hit.entity.get("text"),
+                    "char_count": hit.entity.get("char_count"),
+                    "word_count": hit.entity.get("word_count")
+                })
+        
+        # Optional: Apply reranking
+        if self.config.rerank and formatted_results:
+            formatted_results = self._rerank_results(semantic_query, formatted_results, top_k)
+        
+        return formatted_results
+    
+    def _hybrid_search(
+        self,
+        semantic_query: str,
+        filter_expr: Optional[str],
+        top_k: int
+    ) -> List[Dict]:
+        """
+        Hybrid search using RRF fusion of dense + sparse
+        """
+        collection = self.get_collection()
+        
+        # Generate both embeddings
+        dense_embedding = self.embed_query_dense(semantic_query)
+        sparse_embedding = self.embed_query_sparse(semantic_query)
+        
+        # Dense search request
+        dense_req = AnnSearchRequest(
+            data=[dense_embedding],
+            anns_field="dense_embedding",
+            param={
+                "metric_type": "IP",
+                "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
+            },
+            limit=top_k * 2,
+            expr=filter_expr
+        )
+        
+        # Sparse search request
+        sparse_req = AnnSearchRequest(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param={
+                "metric_type": "IP",
+                "params": {"drop_ratio_search": 0.2}
+            },
+            limit=top_k * 2,
+            expr=filter_expr
+        )
+        
+        # RRF Ranker
+        ranker = RRFRanker(k=60)
+        
+        # Output fields
+        output_fields = [
+            "document_name",
+            "document_id",
+            "chunk_id",
+            "global_chunk_id",
+            "page_idx",
+            "chunk_index",
+            "section_hierarchy",
+            "heading_context",
+            "text",
+            "char_count",
+            "word_count"
+        ]
+        
+        # Execute hybrid search
+        results = collection.hybrid_search(
+            reqs=[dense_req, sparse_req],
+            rerank=ranker,
+            limit=top_k * 2 if self.config.rerank else top_k,
+            output_fields=output_fields
+        )
+        
+        # Format results (use distance for hybrid search)
+        formatted_results = []
+        for hits in results:
+            for hit in hits:
+                formatted_results.append({
+                    "score": float(hit.distance),
+                    "document_name": hit.entity.get("document_name"),
+                    "document_id": hit.entity.get("document_id"),
+                    "chunk_id": hit.entity.get("chunk_id"),
+                    "global_chunk_id": hit.entity.get("global_chunk_id"),
+                    "page_idx": hit.entity.get("page_idx"),
+                    "chunk_index": hit.entity.get("chunk_index"),
+                    "section_hierarchy": hit.entity.get("section_hierarchy"),
+                    "heading_context": hit.entity.get("heading_context"),
+                    "text": hit.entity.get("text"),
+                    "char_count": hit.entity.get("char_count"),
+                    "word_count": hit.entity.get("word_count")
+                })
+        
+        # Optional: Apply reranking
+        if self.config.rerank and formatted_results:
+            formatted_results = self._rerank_results(semantic_query, formatted_results, top_k)
+        
+        return formatted_results
+    
     def retrieve_with_custom_filters(
         self,
         query: str,
         custom_filters: List[MetadataFilter],
         top_k: Optional[int] = None,
-        verbose: bool = True
+        verbose: bool = True,
+        method: Literal["vector", "sparse", "hybrid"] = "hybrid"
     ) -> List[Dict]:
         """
         Retrieve with manually specified metadata filters (bypass query decomposition)
@@ -522,20 +779,39 @@ class SelfQueryRetriever:
             print(f"🔍 CUSTOM FILTER RETRIEVAL")
             print(f"{'='*80}")
             print(f"Query: {query}")
+            print(f"Method: {method}")
             print(f"Filters: {filter_expr}")
             print(f"{'='*80}\n")
         
-        # Perform search
+        # Perform search with specified method
         results = self._search_milvus(
             semantic_query=query,
             filter_expr=filter_expr,
-            top_k=top_k
+            top_k=top_k,
+            method=method
         )
         
         return results
 
 
 # ========================== CONVENIENCE FUNCTIONS ==========================
+
+def create_self_query_retriever(
+    collection_name: str = "VictorText",
+    top_k: int = 5,
+    rerank: bool = True,
+    enable_llm_decomposition: bool = False
+) -> SelfQueryRetriever:
+    """
+    Factory function to create a self-query retriever
+    """
+    config = SelfQueryConfig(
+        collection_name=collection_name,
+        top_k=top_k,
+        rerank=rerank,
+        enable_llm_decomposition=enable_llm_decomposition
+    )
+    return SelfQueryRetriever(config)
 
 def create_self_query_retriever(
     collection_name: str = "VictorText",

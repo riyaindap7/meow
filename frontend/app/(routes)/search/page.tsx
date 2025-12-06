@@ -5,6 +5,8 @@ import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useTheme } from "@/lib/ThemeContext";
 
+type SearchMethod = "vector" | "sparse" | "hybrid";
+
 interface SearchResult {
   text: string;
   source: string;
@@ -17,7 +19,14 @@ interface RAGResponse {
   answer: string;
   sources: SearchResult[];
   model_used: string;
+  method?: string;
 }
+
+const methodDescriptions: Record<SearchMethod, string> = {
+  vector: "Dense semantic search using embeddings",
+  sparse: "Lexical search using BGE-M3 sparse weights",
+  hybrid: "Combined dense + sparse with RRF fusion (recommended)",
+};
 
 export default function Search() {
   const { theme } = useTheme();
@@ -28,6 +37,7 @@ export default function Search() {
   const [results, setResults] = useState<RAGResponse | null>(null);
   const [message, setMessage] = useState("");
   const [selectedSourceIndex, setSelectedSourceIndex] = useState<number | null>(null);
+  const [method, setMethod] = useState<SearchMethod>("hybrid");
 
   async function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -42,7 +52,8 @@ export default function Search() {
     console.log("Searching for:", query);
 
     try {
-      const response = await fetch("http://localhost:8000/ask", {
+      // Use self-query endpoint for better metadata extraction
+      const response = await fetch("http://localhost:8000/ask/self-query", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -51,6 +62,7 @@ export default function Search() {
           query: query,
           top_k: 10,
           temperature: 0.1,
+          method: method,
         }),
       });
 
@@ -178,6 +190,68 @@ export default function Search() {
               <p className={`text-lg ${isDark ? "text-gray-300" : "text-gray-700"}`}>Search across all your uploaded documents with AI-powered intelligence</p>
             </div>
 
+            {/* Search Method Selector */}
+            <div className="space-y-3">
+              <label className={`text-sm font-semibold ${isDark ? "text-gray-300" : "text-gray-700"}`}>
+                Search Method
+              </label>
+              <div className="grid grid-cols-3 gap-3">
+                {(["vector", "sparse", "hybrid"] as SearchMethod[]).map((searchMethod) => (
+                  <button
+                    key={searchMethod}
+                    type="button"
+                    onClick={() => setMethod(searchMethod)}
+                    className={`p-4 rounded-xl border-2 transition-all text-left ${
+                      method === searchMethod
+                        ? isDark
+                          ? "bg-cyan-900/40 border-cyan-500 shadow-lg shadow-cyan-500/20"
+                          : "bg-blue-100 border-blue-500 shadow-lg shadow-blue-500/20"
+                        : isDark
+                        ? "bg-neutral-900/50 border-neutral-700 hover:border-cyan-700"
+                        : "bg-white/50 border-gray-300 hover:border-blue-400"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${
+                        method === searchMethod
+                          ? isDark
+                            ? "border-cyan-400 bg-cyan-400"
+                            : "border-blue-600 bg-blue-600"
+                          : isDark
+                          ? "border-neutral-600"
+                          : "border-gray-400"
+                      }`}>
+                        {method === searchMethod && (
+                          <div className="w-2 h-2 rounded-full bg-white"></div>
+                        )}
+                      </div>
+                      <span className={`font-bold capitalize ${
+                        method === searchMethod
+                          ? isDark ? "text-cyan-300" : "text-blue-700"
+                          : isDark ? "text-gray-300" : "text-gray-700"
+                      }`}>
+                        {searchMethod}
+                      </span>
+                      {searchMethod === "hybrid" && (
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          isDark ? "bg-emerald-900/50 text-emerald-300" : "bg-emerald-100 text-emerald-700"
+                        }`}>
+                          Recommended
+                        </span>
+                      )}
+                    </div>
+                    <p className={`text-xs ${
+                      method === searchMethod
+                        ? isDark ? "text-gray-300" : "text-gray-600"
+                        : isDark ? "text-gray-500" : "text-gray-500"
+                    }`}>
+                      {methodDescriptions[searchMethod]}
+                    </p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             {/* Search Input */}
             <form onSubmit={handleSearch} className="flex gap-3 items-center">
               <input
@@ -230,7 +304,9 @@ export default function Search() {
               <div className="flex items-start justify-between mb-6">
                 <div>
                   <h3 className="text-2xl font-bold text-cyan-300 mb-1">Answer</h3>
-                  <p className="text-xs text-gray-500">Generated by {results.model_used}</p>
+                  <p className="text-xs text-gray-500">
+                    Generated by {results.model_used} • Search: {results.method || method}
+                  </p>
                 </div>
               </div>
               <div className="text-gray-100 leading-relaxed whitespace-pre-wrap text-base">
