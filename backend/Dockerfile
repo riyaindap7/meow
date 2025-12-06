@@ -1,17 +1,35 @@
-# Basic Node.js backend Dockerfile
-FROM node:18-alpine
+# Python FastAPI backend Dockerfile
+FROM python:3.11-slim
 
+# Set working directory
 WORKDIR /app
 
-# Install dependencies (copy package files first to leverage layer caching)
-COPY package*.json ./
-RUN npm ci --only=production
+# Install system dependencies for PDF processing and other libraries
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    build-essential \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy application source
+# Copy requirements first for better layer caching
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
 
-EXPOSE 3000
-ENV NODE_ENV=production
+# Create necessary directories
+RUN mkdir -p /app/data/local_storage/uploads \
+    /app/data/local_storage/processed \
+    /app/data/local_storage/schemes \
+    /app/data/local_storage/scraped_moe_monthly_achivements
 
-# Adjust command to your app's entrypoint if different
-CMD ["node", "index.js"]
+# Expose port
+EXPOSE 8000
+
+# Run the application
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
