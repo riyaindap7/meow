@@ -584,13 +584,29 @@ class SelfQueryRetriever:
             # Get reranking scores
             rerank_scores = reranker.predict(pairs)
             
-            # Add rerank scores to results
-            for doc, score in zip(results, rerank_scores):
-                doc['rerank_score'] = float(score)
-                doc['vector_score'] = doc['score']
-                doc['score'] = float(score)  # Use rerank score as primary
+            # ✅ NORMALIZE rerank scores to 0-1 range using min-max scaling
+            if len(rerank_scores) > 0:
+                min_score = float(min(rerank_scores))
+                max_score = float(max(rerank_scores))
+                score_range = max_score - min_score
+                
+                if score_range > 0:
+                    # Normalize to 0-1 range
+                    normalized_rerank_scores = [(score - min_score) / score_range for score in rerank_scores]
+                else:
+                    # All scores are the same, set to 0.5
+                    normalized_rerank_scores = [0.5] * len(rerank_scores)
+            else:
+                normalized_rerank_scores = []
             
-            # Sort by rerank score
+            # Add both raw and normalized scores to results
+            for doc, raw_score, norm_score in zip(results, rerank_scores, normalized_rerank_scores):
+                doc['rerank_score_raw'] = float(raw_score)  # Keep raw for debugging
+                doc['rerank_score'] = float(norm_score)     # Normalized 0-1
+                doc['vector_score'] = doc['score']
+                doc['score'] = float(norm_score)  # Use normalized as primary (0-1 range)
+            
+            # Sort by normalized rerank score
             reranked = sorted(results, key=lambda x: x['rerank_score'], reverse=True)
             return reranked[:top_k]
         
