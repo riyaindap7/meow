@@ -31,19 +31,21 @@ except ImportError as e:
 class MongoConversationMemory(BaseMemory):
     """
     LangChain-compatible Memory implementation for MongoDB
-    Compatible with Pydantic v2
+    - Inherits from BaseMemory for proper LangChain integration
+    - Returns LangChain Message objects (HumanMessage, AIMessage)
+    - Works with LangChain 0.1.x
     """
-    # ✅ Declare fields for Pydantic
+    
+    # Pydantic v1 field declarations (required for BaseMemory)
     collection: Any = None
     conversation_id: str = ""
     user_id: str = ""
     chat_memory: List = []
     
     class Config:
-        arbitrary_types_allowed = True  # Allow MongoDB collection type
+        arbitrary_types_allowed = True
     
     def __init__(self, mongo_collection, conversation_id: str, user_id: str, **kwargs):
-        # ✅ Initialize Pydantic model properly
         super().__init__(
             collection=mongo_collection,
             conversation_id=conversation_id,
@@ -59,23 +61,22 @@ class MongoConversationMemory(BaseMemory):
     
     def load_memory_variables(self, inputs: Dict = None) -> Dict:
         """
-        Load conversation history from MongoDB
+        Load conversation history from separate messages collection
         Returns LangChain Message objects (HumanMessage, AIMessage)
         """
         try:
-            # Find conversation in MongoDB
-            convo = self.collection.find_one({
-                "conversation_id": self.conversation_id,
-                "user_id": self.user_id
-            })
+            from .mongodb_service import mongodb_service
             
-            if not convo or "messages" not in convo:
+            # Get messages from separate collection
+            messages_data = mongodb_service.get_last_messages(self.conversation_id, limit=10)
+            
+            if not messages_data:
                 return {"chat_history": []}
             
             # Convert to LangChain Message objects
             messages = []
             if LANGCHAIN_AVAILABLE:
-                for msg in convo["messages"]:
+                for msg in messages_data:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     
@@ -85,11 +86,7 @@ class MongoConversationMemory(BaseMemory):
                         messages.append(AIMessage(content=content))
             else:
                 # Fallback for when LangChain not available
-                for msg in convo["messages"]:
-                    messages.append({
-                        "role": msg.get("role", ""),
-                        "content": msg.get("content", "")
-                    })
+                messages = messages_data
             
             self.chat_memory = messages  # Cache in memory
             return {"chat_history": messages}
@@ -100,14 +97,14 @@ class MongoConversationMemory(BaseMemory):
     
     def save_context(self, inputs: Dict, outputs: Dict):
         """
-        Save conversation context to MongoDB
+        Save conversation context to separate messages collection
         Called automatically by LangChain after chain execution
         """
         try:
-            from datetime import datetime
+            from .mongodb_service import mongodb_service
             
             print("\n" + "="*80)
-            print("💾 SAVE_CONTEXT CALLED - Saving to MongoDB")
+            print("💾 SAVE_CONTEXT CALLED - Saving to Messages Collection")
             print("="*80)
             print(f"   Conversation ID: {self.conversation_id}")
             print(f"   User ID: {self.user_id}")
@@ -118,79 +115,62 @@ class MongoConversationMemory(BaseMemory):
             output_content = outputs.get("output") or outputs.get("text") or outputs.get("response") or ""
             print(f"   Output content (first 100 chars): {output_content[:100]}...")
             
-            user_msg = {
-                "role": "user",
-                "content": inputs.get("input", ""),
-                "timestamp": time.time(),
-                "created_at": datetime.utcnow()
-            }
-            
-            ai_msg = {
-                "role": "assistant", 
-                "content": output_content,
-                "timestamp": time.time(),
-                "created_at": datetime.utcnow(),
-                "sources": outputs.get("sources", [])
-            }
-            
-            # Check if conversation exists
-            print(f"🔍 Checking if conversation exists...")
-            existing = self.collection.find_one({
-                "conversation_id": self.conversation_id,
-                "user_id": self.user_id
-            })
-            
-            if existing:
-                print(f"   ✅ Conversation exists with {len(existing.get('messages', []))} messages")
+            # Ensure conversation exists
+            existing_conversation = mongodb_service.get_conversation(self.conversation_id, self.user_id)
+            if not existing_conversation:
+                # Create conversation with title from first query
+                user_query = inputs.get("input", "")
+                if user_query:
+                    # Generate smart title from first query
+                    title = user_query.strip()
+                    if len(title) > 50:
+                        title = title[:47] + "..."
+                else:
+                    title = "New Conversation"
+                
+                mongodb_service.create_conversation(self.conversation_id, self.user_id, title)
+                print(f"   📝 Created conversation with title: '{title}'")
             else:
-                print(f"   ⚠️ Conversation does NOT exist - will create with upsert")
+                # If this is an existing conversation with "New Conversation" title, update it
+                current_title = existing_conversation.get("title", "")
+                if current_title == "New Conversation" and inputs.get("input", ""):
+                    user_query = inputs.get("input", "")
+                    new_title = user_query.strip()
+                    if len(new_title) > 50:
+                        new_title = new_title[:47] + "..."
+                    
+                    mongodb_service.update_conversation_title(self.conversation_id, self.user_id, new_title)
+                    print(f"   📝 Updated conversation title: '{new_title}'")
+                    
+                    mongodb_service.update_conversation_title(self.conversation_id, self.user_id, new_title)
+                    print(f"   📝 Updated conversation title to: '{new_title}'")
             
-            update_fields = {
-                "$push": {
-                    "messages": {
-                        "$each": [user_msg, ai_msg]
-                    }
-                },
-                "$set": {
-                    "updated_at": datetime.utcnow()
-                }
-            }
-            
-            # If conversation doesn't exist, set initial fields
-            if not existing:
-                update_fields["$setOnInsert"] = {
-                    "created_at": datetime.utcnow(),
-                    "title": inputs.get("input", "")[:50],  # Use first query as title
-                    "archived": False
-                }
-                print(f"   📝 Will create conversation with title: '{inputs.get('input', '')[:50]}'")
-            # If this is the first message (only has 0 messages), update title
-            elif existing and len(existing.get("messages", [])) == 0:
-                update_fields["$set"]["title"] = inputs.get("input", "")[:50]
-                print(f"   📝 Updating title: '{inputs.get('input', '')[:50]}'")
-            
-            # Update MongoDB with new messages
-            print(f"💾 Executing MongoDB update_one...")
-            result = self.collection.update_one(
-                {
-                    "conversation_id": self.conversation_id,
-                    "user_id": self.user_id
-                },
-                update_fields,
-                upsert=True
+            # Add user message
+            user_success = mongodb_service.add_message(
+                conversation_id=self.conversation_id,
+                user_id=self.user_id,
+                role="user",
+                content=inputs.get("input", ""),
+                metadata={}
             )
             
-            print(f"✅ MongoDB update completed!")
-            print(f"   Matched: {result.matched_count}")
-            print(f"   Modified: {result.modified_count}")
-            print(f"   Upserted ID: {result.upserted_id}")
+            # Add assistant message  
+            ai_success = mongodb_service.add_message(
+                conversation_id=self.conversation_id,
+                user_id=self.user_id,
+                role="assistant",
+                content=output_content,
+                metadata={"sources": outputs.get("sources", [])}
+            )
             
-            # Verify it was saved
-            verify = self.collection.find_one({"conversation_id": self.conversation_id})
-            if verify:
-                print(f"✅ VERIFIED: Conversation now has {len(verify.get('messages', []))} messages")
+            if user_success and ai_success:
+                print(f"✅ Messages saved to separate collection!")
+                
+                # Verify messages were saved
+                messages = mongodb_service.get_last_messages(self.conversation_id, limit=2)
+                print(f"   ✅ VERIFIED: Found {len(messages)} messages in conversation")
             else:
-                print(f"❌ VERIFICATION FAILED: Conversation not found after save!")
+                print(f"❌ FAILED to save messages!")
             
             print("="*80 + "\n")
             
@@ -396,75 +376,43 @@ Answer:"""
         
         return "\n---\n".join(context_parts)
     
-    def invoke(self, inputs: Dict) -> Dict:
+    def invoke(self, query: str, top_k: int = 10, temperature: float = 0.1):
         """
-        Execute TRUE LangChain pipeline
-        - memory.load() → automatic
-        - prompt injection → automatic
-        - llm.generate() → automatic
-        - memory.save() → automatic
+        Invoke the TRUE LangChain RAG with role-based parameters
         """
         try:
-            query = inputs.get("input", "")
+            print(f"🎯 Using role-based top_k: {top_k}")
+            print(f"🔍 Retrieving {top_k} documents")
             
-            print(f"🔵 TRUE LangChain RAG Chain executing: {query}")
-            
-            # 1. Retrieve documents (still manual - retrieval happens before chain)
-            contexts = self.retriever.retrieve(query)
+            # Retrieve documents with role-based top_k
+            contexts = self.retriever.similarity_search(query, k=top_k)
             print(f"📚 Retrieved {len(contexts)} documents")
             
-            # 2. Format context
-            context_text = self._format_contexts(contexts)
+            if not contexts:
+                return [], "I couldn't find relevant documents to answer your question."
             
-            if self.chain and LANGCHAIN_AVAILABLE:
-                # TRUE LangChain automatic flow:
-                # chain.invoke() → memory loads → injects history → LLM generates → memory saves
-                print("🔄 Executing LLMChain with automatic memory...")
-                
-                result = self.chain.invoke({
-                    "input": query,
-                    "context": context_text
-                })
-                
-                answer = result.get("text", result.get("output", ""))
-                
-                print("✅ LangChain auto-memory completed")
+            # Format contexts for LLM
+            formatted_contexts = []
+            for i, doc in enumerate(contexts):
+                context_dict = {
+                    "text": doc.page_content,
+                    "source": getattr(doc, 'metadata', {}).get('source', f'Document {i+1}'),
+                    "page": getattr(doc, 'metadata', {}).get('page', 1),
+                    "score": getattr(doc, 'metadata', {}).get('score', 0.0)
+                }
+                formatted_contexts.append(context_dict)
             
-            else:
-                # Fallback manual mode
-                print("🔄 Manual mode (LangChain not available)...")
-                
-                memory_vars = self.memory.load_memory_variables({})
-                chat_history = memory_vars.get("chat_history", [])
-                
-                history_text = self._format_chat_history(chat_history)
-                
-                prompt = f"""{history_text}
-
-Document Context:
-{context_text}
-
-Current Question: {query}
-
-Answer:"""
-                
-                answer = self.llm.generate(prompt, temperature=inputs.get("temperature", 0.1))
-                
-                self.memory.save_context(
-                    inputs={"input": query},
-                    outputs={"output": answer, "sources": contexts}
-                )
+            # Generate answer using LLM with role-based temperature
+            prompt = self._create_enhanced_prompt(query, formatted_contexts)
             
-            return {
-                "output": answer,
-                "contexts": contexts
-            }
+            # Use the LLM generate method with role-based temperature
+            answer = self.llm.generate(prompt, temperature=temperature)
+            
+            return formatted_contexts, answer
             
         except Exception as e:
-            print(f"❌ Chain invoke error: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise
+            print(f"❌ TRUE LangChain invoke error: {str(e)}")
+            return [], f"Error in retrieval: {str(e)}"
 
 class DocumentRetriever:
     """Document retriever for Milvus"""
@@ -472,15 +420,11 @@ class DocumentRetriever:
     def __init__(self, milvus_client):
         self.milvus_client = milvus_client
     
-    def retrieve(self, query: str, top_k: int = 5) -> List[Dict]:
-        """Retrieve relevant documents using HYBRID search"""
+    def retrieve(self, query: str, top_k: int = 10) -> List[Dict]:
+        """Retrieve relevant documents"""
         try:
             if self.milvus_client:
-                return self.milvus_client.search(
-                    query=query, 
-                    top_k=top_k,
-                    method="hybrid"  # ✅ Enable hybrid search for chat
-                )
+                return self.milvus_client.search(query=query, top_k=top_k)
             return []
         except Exception as e:
             print(f"❌ Error retrieving documents: {str(e)}")
@@ -546,22 +490,158 @@ class FullLangChainRAG:
         
         print("✅ Full LangChain RAG with TRUE Memory initialized successfully")
     
-    def ask(self, 
-           query: str, 
-           conversation_id: str = None, 
-           user_id: str = None,
-           temperature: float = 0.1) -> Dict[str, Any]:
+    def _update_conversation_context(self, conversation_id: str, user_id: str, query: str, answer: str, contexts: List[Dict[str, Any]]):
         """
-        Ask a question using TRUE LangChain pipeline
+        Extract and update conversation context using LLM analysis
+        """
+        if self.conversations_collection is None or not conversation_id:
+            return
+        
+        import json  # Import at the top of the method
+        
+        try:
+            # Get conversation history for context
+            conversation = self.conversations_collection.find_one({
+                "conversation_id": conversation_id,
+                "user_id": user_id
+            })
+            
+            if not conversation:
+                return
+            
+            # Get last few messages for analysis
+            from .mongodb_service import mongodb_service
+            recent_messages = mongodb_service.get_last_messages(conversation_id, limit=6)
+            
+            # Format conversation for analysis
+            conversation_text = "\n".join([
+                f"{msg['role']}: {msg['content']}"
+                for msg in recent_messages[-6:]  # Last 3 exchanges
+            ])
+            
+            # Format contexts for analysis
+            context_info = "\n".join([
+                f"- {ctx.get('source_file', 'Unknown')}: {ctx.get('text', '')[:100]}..."
+                for ctx in contexts[:5]
+            ])
+            
+            # LLM prompt for context extraction
+            context_prompt = f"""
+Analyze this conversation and extract key context information in JSON format.
+
+Conversation:
+{conversation_text}
+
+Relevant Documents:
+{context_info}
+
+Extract and return a JSON object with:
+{{
+  "summary": "Brief 2-sentence summary of the conversation",
+  "topics": ["list", "of", "key", "topics", "discussed"],
+  "main_entities": ["important", "entities", "mentioned"],
+  "user_goal": "What the user seems to be trying to achieve"
+}}
+
+Return only valid JSON, no extra text:"""
+            
+            # Get context extraction with retry logic
+            for attempt in range(3):
+                try:
+                    context_response = self.llm.generate(context_prompt)
+                    context_text = str(context_response)
+                    
+                    # Clean up response
+                    context_text = context_text.strip()
+                    if context_text.startswith('```json'):
+                        context_text = context_text[7:]
+                    if context_text.endswith('```'):
+                        context_text = context_text[:-3]
+                    context_text = context_text.strip()
+                    
+                    # Parse JSON
+                    context_data = json.loads(context_text)
+                    
+                    # Update conversation with extracted context
+                    mongodb_service.update_conversation_context(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        context_data=context_data
+                    )
+                    
+                    print(f"✅ Context extracted and saved for conversation {conversation_id}")
+                    break
+                    
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ Context extraction JSON error (attempt {attempt + 1}): {e}")
+                    if attempt == 2:
+                        print("❌ Failed to extract context after 3 attempts")
+                except Exception as e:
+                    print(f"⚠️ Context extraction error (attempt {attempt + 1}): {e}")
+                    if attempt == 2:
+                        print(f"❌ Failed to extract context: {e}")
+                        
+        except Exception as e:
+            print(f"❌ Error updating conversation context: {e}")
+    
+    def ask(self, query: str, user_id: str, conversation_id: str = None, temperature: float = None, top_k: int = None, user: dict = None, dense_weight: float = 0.6, sparse_weight: float = 0.4, method: str = "hybrid"):
+        """
+        Ask a question using TRUE LangChain pipeline with role-based parameters
         - Memory automatically loads from MongoDB
         - Chain automatically injects history into prompt
         - Memory automatically saves after response
+        - Applies role-based RAG parameters
+        - Supports hybrid search with dense/sparse weights
         """
         
+        # Apply role-based parameters if user is provided
+        if user:
+            from .role_config import build_chain_params
+            user_role = user.get("role", "user")
+            role_params = build_chain_params(user)
+            print(f"📊 ROLE: {user_role} | PARAMS: temp={role_params.get('temperature')}, docs={role_params.get('top_k')}")
+            
+            # Use role-based parameters with override capability
+            if temperature is None:
+                temperature = role_params.get('temperature', 0.1)
+            if top_k is None:
+                top_k = role_params.get('top_k', 5)
+            if dense_weight is None:
+                dense_weight = role_params.get('dense_weight', 0.6)
+            if sparse_weight is None:
+                sparse_weight = role_params.get('sparse_weight', 0.4)
+            if method == "hybrid":
+                method = role_params.get('method', 'hybrid')
+        else:
+            # Default fallback values
+            if temperature is None:
+                temperature = 0.1
+            if top_k is None:
+                top_k = 10
+            if dense_weight is None:
+                dense_weight = 0.6
+            if sparse_weight is None:
+                sparse_weight = 0.4
+        
+        print(f"🚀 GENERATING RESPONSE with ROLE: {user.get('role', 'user') if user else 'unknown'}")
+        
+        # Use provided parameters or fallback to role config, then to defaults
+        final_temperature = temperature if temperature is not None else role_config.get("temperature", 0.2)
+        final_top_k = top_k if top_k is not None else role_config.get("top_k", 10)
+        final_dense_weight = dense_weight if dense_weight is not None else role_config.get("dense_weight", 0.7)
+        final_sparse_weight = sparse_weight if sparse_weight is not None else role_config.get("sparse_weight", 0.3)
+        
+        # Ensure minimum 10 documents
+        if final_top_k < 10:
+            final_top_k = 10
+        
+        print(f"📊 Final params: temperature={final_temperature}, top_k={final_top_k}, dense_weight={final_dense_weight}, sparse_weight={final_sparse_weight}, method={method}")
+        
         try:
-            print(f"🔵 TRUE LangChain RAG Query: {query}")
-            print(f"   Conversation ID: {conversation_id}")
-            print(f"   User ID: {user_id}")
+            # Generate conversation_id if not provided
+            if not conversation_id:
+                import uuid
+                conversation_id = str(uuid.uuid4())
             
             # Create TRUE LangChain Memory (BaseChatMemory)
             if conversation_id and user_id and self.conversations_collection is not None:
@@ -570,7 +650,6 @@ class FullLangChainRAG:
                     conversation_id,
                     user_id
                 )
-                print("✅ TRUE LangChain Memory (BaseChatMemory) created")
             else:
                 # No-op memory for sessions without persistence
                 memory = type('obj', (object,), {
@@ -579,43 +658,89 @@ class FullLangChainRAG:
                     'save_context': lambda self, inputs, outputs: None,
                     'clear': lambda self: None
                 })()
-                print("⚠️ Using no-op memory (no persistence)")
             
-            # Create TRUE LangChain Chain with automatic memory
-            chain = TrueLangChainRAG(
-                llm=self.llm,
-                retriever=self.retriever,
-                memory=memory
-            )
+            # Retrieve documents using Milvus with role-based parameters
+            try:
+                if self.milvus_client:
+                    print(f"🔍 Retrieving {top_k} documents using {method} search")
+                    contexts = self.milvus_client.search(
+                        query=query,
+                        top_k=top_k,
+                        method=method
+                    )
+                    print(f"📚 Retrieved {len(contexts)} documents")
+                else:
+                    contexts = []
+            except Exception as e:
+                print(f"❌ Document retrieval error: {str(e)}")
+                contexts = []
             
-            # Execute chain - memory loads, injects, and saves automatically!
-            print("🔄 Executing TRUE LangChain chain with auto-memory...")
-            result = chain.invoke({
-                "input": query,
-                "temperature": temperature
-            })
+            # Format contexts for LLM
+            if contexts:
+                context_text = "\n\n".join([
+                    f"[Source {i+1}] {ctx.get('document_name', 'Unknown')} (Page {ctx.get('page_idx', 'N/A')}):\n{ctx.get('text', '')}"
+                    for i, ctx in enumerate(contexts[:5])
+                ])
+            else:
+                context_text = "No relevant documents found."
             
-            # Extract results
-            answer = result.get("output", "")
-            contexts = result.get("contexts", [])
+            # Create enhanced prompt
+            prompt = f"""You are VICTOR, a helpful, intelligent AI assistant specializing in government documents and policy materials. Answer the user's question using the information found in the provided context documents.
+
+CONTEXT:
+{context_text}
+
+INSTRUCTIONS:
+- Use the context as your primary reference while applying deep analytical reasoning
+- You may reason and make logical connections between information from different documents
+- When reasoning between documents, clearly indicate this is your logical inference based on the provided information
+- If after reasoning through the documents you still cannot answer, reply: "I cannot answer this question based on the provided documents."
+- Always cite document name and page number for each factual statement
+- Explain naturally, clearly, and in a conversational tone
+- Structure your response clearly with proper formatting
+- Connect information logically and provide meaningful insights
+- Use step-by-step reasoning internally, but deliver a cohesive final answer
+
+USER QUESTION:
+{query}
+
+ANSWER:"""
+            
+            # Generate answer using LLM with role-based temperature
+            answer = self.llm.generate(prompt, temperature=temperature)
+            
+            # Save to memory
+            try:
+                memory.save_context(
+                    inputs={"input": query},
+                    outputs={"output": answer}
+                )
+            except Exception as e:
+                print(f"❌ Memory save error: {str(e)}")
             
             # Format sources
             sources = []
             for ctx in contexts:
                 sources.append({
                     "text": ctx.get('text', '')[:200] + "..." if len(ctx.get('text', '')) > 200 else ctx.get('text', ''),
-                    "source_file": ctx.get("source_file", ""),
-                    "page_idx": ctx.get("page_idx", 0),
+                    "source": ctx.get("document_name", ""),
+                    "page": ctx.get("page_idx", 0),
                     "score": ctx.get("score", 0.0),
-                    "global_chunk_id": ctx.get("global_chunk_id"),
                     "document_id": ctx.get("document_id"),
+                    "chunk_id": ctx.get("chunk_id"),
+                    "global_chunk_id": ctx.get("global_chunk_id"),
                     "chunk_index": ctx.get("chunk_index"),
                     "section_hierarchy": ctx.get("section_hierarchy"),
+                    "heading_context": ctx.get("heading_context"),
                     "char_count": ctx.get("char_count"),
                     "word_count": ctx.get("word_count")
                 })
             
-            print("✅ TRUE LangChain RAG completed (memory auto-saved)")
+            print("✅ TRUE LangChain RAG completed")
+            
+            # Extract and update conversation context
+            if conversation_id and user_id:
+                self._update_conversation_context(conversation_id, user_id, query, answer, contexts)
             
             return {
                 "answer": answer,

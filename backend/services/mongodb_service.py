@@ -373,3 +373,269 @@ def get_stats() -> Dict[str, Any]:
         "last_sync_time": get_last_sync_time()
     }
 
+
+# Conversation and Message Management Functions
+def get_conversations_collection():
+    """Get the conversations collection"""
+    db = get_mongo_db()
+    return db.conversations
+
+def get_messages_collection():
+    """Get the messages collection"""
+    db = get_mongo_db()
+    return db.messages
+
+def create_conversation(conversation_id: str, user_id: str, title: str = None) -> Dict[str, Any]:
+    """Create a new conversation with smart title generation"""
+    try:
+        conversations = get_conversations_collection()
+        
+        # Generate smart title if none provided
+        if not title:
+            title = "New Conversation"
+        else:
+            # Clean and truncate title from first query
+            title = title.strip()
+            if len(title) > 50:
+                title = title[:47] + "..."
+        
+        conversation_doc = {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "title": title,
+            "messages": [],  # Keep for backward compatibility but will be empty
+            "created_at": get_ist_now(),
+            "updated_at": get_ist_now(),
+            "archived": False,
+            "metadata": {},
+            "context": {}  # For LLM-extracted context
+        }
+        
+        result = conversations.insert_one(conversation_doc)
+        conversation_doc["_id"] = str(result.inserted_id)
+        
+        return serialize_doc(conversation_doc)
+        
+    except Exception as e:
+        print(f"Error creating conversation: {e}")
+        return None
+
+def get_conversation(conversation_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """Get a conversation by ID and user"""
+    try:
+        conversations = get_conversations_collection()
+        conversation = conversations.find_one({
+            "conversation_id": conversation_id,
+            "user_id": user_id
+        })
+        return serialize_doc(conversation)
+    except Exception as e:
+        print(f"Error getting conversation: {e}")
+        return None
+
+def add_message(conversation_id: str, user_id: str, role: str, content: str, metadata: Dict = None) -> bool:
+    """Add a message to the separate messages collection"""
+    try:
+        messages = get_messages_collection()
+        conversations = get_conversations_collection()
+        
+        # Create message document
+        import uuid
+        message_doc = {
+            "message_id": str(uuid.uuid4()),
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": role,
+            "content": content,
+            "timestamp": get_ist_now(),
+            "metadata": metadata or {}
+        }
+        
+        # Insert message
+        messages.insert_one(message_doc)
+        
+        # Update conversation timestamp
+        conversations.update_one(
+            {"conversation_id": conversation_id, "user_id": user_id},
+            {"$set": {"updated_at": get_ist_now()}}
+        )
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error adding message: {e}")
+        return False
+
+def get_last_messages(conversation_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Get the last N messages from a conversation"""
+    try:
+        messages = get_messages_collection()
+        
+        # Get messages sorted by timestamp (oldest first for proper order)
+        message_docs = list(messages.find({
+            "conversation_id": conversation_id
+        }).sort("timestamp", ASCENDING).limit(limit * 2))  # Get more to be safe
+        
+        # Take the last 'limit' messages
+        if len(message_docs) > limit:
+            message_docs = message_docs[-limit:]
+        
+        return serialize_docs(message_docs)
+        
+    except Exception as e:
+        print(f"Error getting last messages: {e}")
+        return []
+
+def get_user_conversations(user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """Get all conversations for a user"""
+    try:
+        conversations = get_conversations_collection()
+        
+        conversation_docs = list(conversations.find({
+            "user_id": user_id,
+            "archived": {"$ne": True}
+        }).sort("updated_at", DESCENDING).limit(limit))
+        
+        return serialize_docs(conversation_docs)
+        
+    except Exception as e:
+        print(f"Error getting user conversations: {e}")
+        return []
+
+def update_conversation_title(conversation_id: str, user_id: str, title: str) -> bool:
+    """Update conversation title based on first user query"""
+    try:
+        conversations = get_conversations_collection()
+        
+        # Clean and format title
+        clean_title = title.strip()
+        if len(clean_title) > 50:
+            clean_title = clean_title[:47] + "..."
+        
+        result = conversations.update_one(
+            {
+                "conversation_id": conversation_id,
+                "user_id": user_id
+            },
+            {
+                "$set": {
+                    "title": clean_title,
+                    "updated_at": get_ist_now()
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+        
+    except Exception as e:
+        print(f"Error updating conversation title: {e}")
+        return False
+
+def update_conversation_context(conversation_id: str, user_id: str, context_data: Dict[str, Any]) -> bool:
+    """Update conversation with LLM-extracted context"""
+    try:
+        conversations = get_conversations_collection()
+        
+        result = conversations.update_one(
+            {
+                "conversation_id": conversation_id,
+                "user_id": user_id
+            },
+            {
+                "$set": {
+                    "context": context_data,
+                    "updated_at": get_ist_now()
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+        
+    except Exception as e:
+        print(f"Error updating conversation context: {e}")
+        return False
+
+def update_conversation_title(conversation_id: str, user_id: str, title: str) -> bool:
+    """Update conversation title based on first user message"""
+    try:
+        conversations = get_conversations_collection()
+        
+        # Clean and truncate title
+        title = title.strip()
+        if len(title) > 50:
+            title = title[:47] + "..."
+        
+        # Only update if current title is "New Conversation"
+        result = conversations.update_one(
+            {
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "title": "New Conversation"  # Only update if still default
+            },
+            {
+                "$set": {
+                    "title": title,
+                    "updated_at": get_ist_now()
+                }
+            }
+        )
+        
+        return result.modified_count > 0
+        
+    except Exception as e:
+        print(f"Error updating conversation title: {e}")
+        return False
+
+def delete_conversation(conversation_id: str, user_id: str) -> bool:
+    """Delete a conversation and all its messages"""
+    try:
+        conversations = get_conversations_collection()
+        messages = get_messages_collection()
+        
+        # Delete all messages for this conversation
+        messages.delete_many({"conversation_id": conversation_id})
+        
+        # Delete the conversation
+        result = conversations.delete_one({
+            "conversation_id": conversation_id,
+            "user_id": user_id
+        })
+        
+        return result.deleted_count > 0
+        
+    except Exception as e:
+        print(f"Error deleting conversation: {e}")
+        return False
+
+
+# Create a service instance for easy importing
+class MongoDBService:
+    """Service class for conversation and message management"""
+    
+    def create_conversation(self, conversation_id: str, user_id: str, title: str = "New Conversation"):
+        return create_conversation(conversation_id, user_id, title)
+    
+    def get_conversation(self, conversation_id: str, user_id: str):
+        return get_conversation(conversation_id, user_id)
+    
+    def add_message(self, conversation_id: str, user_id: str, role: str, content: str, metadata: Dict = None):
+        return add_message(conversation_id, user_id, role, content, metadata)
+    
+    def get_last_messages(self, conversation_id: str, limit: int = 10):
+        return get_last_messages(conversation_id, limit)
+    
+    def get_user_conversations(self, user_id: str, limit: int = 50):
+        return get_user_conversations(user_id, limit)
+    
+    def update_conversation_context(self, conversation_id: str, user_id: str, context_data: Dict[str, Any]):
+        return update_conversation_context(conversation_id, user_id, context_data)
+    
+    def update_conversation_title(self, conversation_id: str, user_id: str, title: str):
+        return update_conversation_title(conversation_id, user_id, title)
+    
+    def delete_conversation(self, conversation_id: str, user_id: str):
+        return delete_conversation(conversation_id, user_id)
+
+# Create service instance
+mongodb_service = MongoDBService()
+

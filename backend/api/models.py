@@ -1,22 +1,20 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Any, Dict, Literal
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 
-
 class QueryRequest(BaseModel):
-    query: str = Field(..., description="User query text", min_length=1)
-    top_k: Optional[int] = Field(3, description="Number of results to retrieve", ge=1, le=10)
-    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
-        "hybrid", 
-        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
-    )
-
+    query: str
+    top_k: Optional[int] = 10
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
+    dense_weight: Optional[float] = 0.7
+    sparse_weight: Optional[float] = 0.3
+    filter_expr: Optional[str] = None
+    
 class SearchResult(BaseModel):
-    """Individual search result with Vtext schema"""
     text: str
-    source_file: str  # Changed from 'source'
-    page_idx: int  # Changed from 'page'
-    score: float
+    source: str = ""
+    page: int = 0
+    score: float = 0.0
     document_id: Optional[str] = None
     chunk_id: Optional[str] = None
     global_chunk_id: Optional[str] = None
@@ -24,47 +22,121 @@ class SearchResult(BaseModel):
     section_hierarchy: Optional[str] = None
     char_count: Optional[int] = None
     word_count: Optional[int] = None
+    # New VictorText2 fields
+    category: Optional[str] = None
+    document_type: Optional[str] = None
+    ministry: Optional[str] = None
+    published_date: Optional[str] = None
+    language: Optional[str] = None
+    source_reference: Optional[str] = None
+    # Additional fields for compatibility
+    source_file: Optional[str] = None
+    page_idx: Optional[int] = None
+    document_name: Optional[str] = None
 
 class SearchResponse(BaseModel):
-    """Search response"""
     query: str
     results: List[SearchResult]
     count: int
     latency_ms: float
-    method: str = "hybrid"
+    method: Optional[str] = "hybrid"
 
 class RAGRequest(BaseModel):
-    query: str = Field(..., description="User query text", min_length=1)
-    top_k: Optional[int] = Field(3, description="Number of context chunks", ge=1, le=10)
-    temperature: Optional[float] = Field(0.0, description="LLM temperature", ge=0.0, le=1.0)
-    conversation_id: Optional[str] = None  # ✅ Make sure this line exists
-    method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
-        "hybrid", 
-        description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
-    )
+    query: str
+    conversation_id: Optional[str] = None
+    temperature: Optional[float] = None
+    top_k: Optional[int] = None
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
+    dense_weight: Optional[float] = 0.7
+    sparse_weight: Optional[float] = 0.3
+    filter_expr: Optional[str] = None
 
 class RAGResponse(BaseModel):
-    """RAG response with answer and sources"""
     query: str
     answer: str
     sources: List[SearchResult]
-    model_used: str
-    search_latency_ms: float
-    llm_latency_ms: float
-    total_latency_ms: float
+    conversation_id: Optional[str] = None
+    model_used: str = ""
+    search_latency_ms: Optional[float] = None
+    llm_latency_ms: Optional[float] = None
+    total_latency_ms: Optional[float] = None
     method: str = "hybrid"
+
+class HybridSearchRequest(BaseModel):
+    """Advanced hybrid search with filtering options"""
+    query: str
+    top_k: Optional[int] = 10
+    dense_weight: Optional[float] = 0.7
+    sparse_weight: Optional[float] = 0.3
+    # Filter options
+    category: Optional[str] = None
+    ministry: Optional[str] = None
+    document_type: Optional[str] = None
+    language: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    # Additional filters
+    source_reference: Optional[str] = None
+    semantic_labels: Optional[str] = None
 
 class HealthResponse(BaseModel):
     status: str
-    milvus_connected: bool
-    collection_exists: bool
-    total_vectors: int
-    embedding_model: str
+    milvus_connected: bool = False
+    collection_exists: bool = False
+    total_vectors: int = 0
+    embedding_model: str = ""
     hybrid_enabled: bool = False
     has_dense_field: Optional[bool] = None
     has_sparse_field: Optional[bool] = None
-    reranker_enabled: Optional[bool] = None
-    reranker_model: Optional[str] = None
+
+# Conversation models
+class Message(BaseModel):
+    message_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+    metadata: Optional[Dict[str, Any]] = {}
+
+class Conversation(BaseModel):
+    conversation_id: str
+    user_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    messages: List[Message] = []
+    metadata: Optional[Dict[str, Any]] = {}
+
+class CreateConversationRequest(BaseModel):
+    title: Optional[str] = "New Conversation"
+    metadata: Optional[Dict[str, Any]] = {}
+
+class TranscriptResponse(BaseModel):
+    transcript: str
+
+# Filter models for advanced search
+class DocumentFilter(BaseModel):
+    category: Optional[str] = None
+    ministry: Optional[str] = None
+    document_type: Optional[str] = None
+    language: Optional[str] = None
+    published_date_from: Optional[str] = None
+    published_date_to: Optional[str] = None
+
+class FilteredSearchRequest(BaseModel):
+    query: str
+    top_k: Optional[int] = 10
+    method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
+    filters: Optional[DocumentFilter] = None
+    dense_weight: Optional[float] = 0.7
+    sparse_weight: Optional[float] = 0.3
+
+# Metadata models for discovery endpoints
+class AvailableFilters(BaseModel):
+    categories: List[str] = []
+    ministries: List[str] = []
+    document_types: List[str] = []
+    languages: List[str] = []
+    date_range: Optional[Dict[str, str]] = None
 
 # ============================================================================
 # COMPARISON AND RERANKING MODELS (Existing - maintained for compatibility)
@@ -119,92 +191,48 @@ class RerankRequest(BaseModel):
         description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
     )
 
-# ==================== CONVERSATION & CHAT MODELS ====================
-
-class RetrievedDoc(BaseModel):
-    """Retrieved document reference in context"""
-    doc_id: str
-    source: str
-    page: int
-    score: float
-    snippet: Optional[str] = None
-    chunk_id: Optional[str] = None
-
-class ConversationContext(BaseModel):
-    """Last retrieval snapshot used for generation"""
-    last_search_at: Optional[datetime] = None
-    query: Optional[str] = None
-    retrieved_docs: List[RetrievedDoc] = []
-
-class ConversationSummary(BaseModel):
-    """Condensed summary of older turns"""
-    summary_text: str
-    updated_at: Optional[datetime] = None
-    tool_version: str = "v1.0"
-
-class ChatMessage(BaseModel):
-    """Individual chat message in conversation"""
-    message_id: Optional[str] = None
-    role: str = Field(..., description="user, assistant, or system")
-    content: str
-    content_type: Optional[str] = "text"
-    attachments: Optional[List[Dict]] = []
-    created_at: Optional[datetime] = None
-    tokens_estimate: Optional[int] = None
-    meta: Optional[Dict] = {}
+class SearchStats(BaseModel):
+    total_documents: int
+    total_chunks: int
+    available_filters: AvailableFilters
+    collection_name: str
+    last_updated: Optional[str] = None
 
 class ConversationMetadata(BaseModel):
-    """Conversation metadata response"""
+    """Metadata for conversation list view (without full message history)"""
     conversation_id: str
-    user_id: Optional[str] = None
+    user_id: str
     title: str
-    created_at: datetime
-    updated_at: datetime
-    archived: bool = False
-    message_count: Optional[int] = 0
-
-class CreateConversationRequest(BaseModel):
-    """Request to create new conversation"""
-    title: Optional[str] = "New Conversation"
-    metadata: Optional[Dict] = None
-    settings: Optional[Dict] = None
-
-class ConversationResponse(BaseModel):
-    """Complete conversation response"""
-    conversation_id: str
-    user_id: Optional[str] = None
-    title: str
-    created_at: datetime
-    updated_at: datetime
-    archived: bool = False
-    metadata: Optional[Dict] = None
-    messages: List[ChatMessage] = []
-    context: Optional[ConversationContext] = None
-    summary: Optional[ConversationSummary] = None
-    settings: Optional[Dict] = None
-
-class ChatRequest(BaseModel):
-    """Chat request with conversation context"""
-    conversation_id: str
-    query: str
-    top_k: Optional[int] = 5
-    temperature: Optional[float] = 0.1
-    include_history: Optional[bool] = True
-
-class ChatResponse(BaseModel):
-    """Chat response with message and context"""
-    conversation_id: str
-    message_id: str
-    role: str = "assistant"
-    content: str
-    sources: Optional[List[SearchResult]] = []
-    model_used: str
-    search_latency_ms: float
-    llm_latency_ms: float
-    total_latency_ms: float
+    created_at: str  # ISO format string for JSON serialization
+    updated_at: str  # ISO format string for JSON serialization
+    message_count: int = 0
+    metadata: Optional[Dict[str, Any]] = {}
 
 class ListConversationsResponse(BaseModel):
-    """List of user's conversations"""
+    """Response for listing user's conversations"""
     conversations: List[ConversationMetadata]
     count: int
-    total: Optional[int] = None
+
+class ConversationResponse(BaseModel):
+    """Full conversation with messages"""
+    conversation_id: str
+    user_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    messages: List[Message] = []
+    metadata: Optional[Dict[str, Any]] = {}
+
+class ChatRequest(BaseModel):
+    """Request for chat endpoint"""
+    query: str
+    conversation_id: Optional[str] = None
+    temperature: Optional[float] = 0.7
+
+class ChatResponse(BaseModel):
+    """Response from chat endpoint"""
+    conversation_id: str
+    message_id: str
+    answer: str
+    sources: List[SearchResult] = []
+    model_used: str = ""

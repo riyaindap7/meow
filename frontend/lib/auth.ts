@@ -24,6 +24,18 @@ export const auth = betterAuth({
   },
   // Add secret key
   secret: process.env.BETTER_AUTH_SECRET || "your-secret-key-here-make-it-very-long-and-random",
+
+  // Define user schema with role field
+  user: {
+    additionalFields: {
+      role: {
+        type: "string",
+        defaultValue: "user",
+        required: false,
+      }
+    }
+  }
+
 });
 
 export type Session = typeof auth.$Infer.Session;

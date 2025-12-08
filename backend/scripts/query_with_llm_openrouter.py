@@ -16,7 +16,7 @@ from sentence_transformers import SentenceTransformer
 MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "pdf_vectors")
-TOP_K = int(os.getenv("TOP_K", "5"))
+TOP_K = int(os.getenv("TOP_K", "10"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")  # must match collection
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # set your API key in env
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
@@ -81,15 +81,25 @@ def build_prompt(query, retrieved, max_chars=4000):
     context = "\n\n".join(parts)
     if len(context) > max_chars:
         context = context[:max_chars]
-    prompt = textwrap.dedent(f"""
-        You are a helpful, factual assistant. Use ONLY the information in the context below to answer.
-        Context:
-        {context}
+    
+    prompt = f"""You are a helpful, intelligent AI assistant. Answer the user's question using the information found in the provided context from multiple documents.
 
-        Question: {query}
+CONTEXT:
+{context}
 
-        Instructions: Provide a concise answer and include citations in square brackets referring to the context indices (e.g. [1], [2]). If the answer is not contained in the context, reply: "I don't know based on the provided documents."
-        """).strip()
+INSTRUCTIONS:
+- Use the context as your primary reference while applying deep reasoning
+- Connect information logically and provide analytical insights
+- Explain naturally, clearly, and in a conversational tone
+- You may summarize, reorganize, and reason through the information
+- Cite sources using brackets [1], [2], etc. for factual statements
+- If context doesn't contain sufficient information, state: "I cannot fully answer this question based on the provided documents."
+- Apply your reasoning to provide meaningful, well-structured responses
+
+USER QUESTION:
+{query}
+
+ANSWER:"""
     return prompt
 
 def generate_answer_openrouter(prompt):

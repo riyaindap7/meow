@@ -14,6 +14,7 @@ export default function AuthModal({ isOpen, type, onClose, onSuccess }: AuthModa
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [role, setRole] = useState('user'); // Default role
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -42,6 +43,7 @@ export default function AuthModal({ isOpen, type, onClose, onSuccess }: AuthModa
       setEmail('');
       setPassword('');
       setName('');
+      setRole('user');
       
       if (onSuccess) onSuccess();
       onClose();
@@ -115,6 +117,23 @@ export default function AuthModal({ isOpen, type, onClose, onSuccess }: AuthModa
               disabled={loading}
             />
           </div>
+
+          {type === 'signup' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Role</label>
+              <select
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
+                disabled={loading}
+              >
+                <option value="user">User</option>
+                <option value="research_assistant">Research Assistant</option>
+                <option value="policy_maker">Policy Maker</option>
+                <option value="admin">Admin</option>
+              </select>
+            </div>
+          )}
           
           {error && (
             <div className="bg-red-900/20 border border-red-500 rounded-lg p-3">

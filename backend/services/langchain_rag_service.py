@@ -41,15 +41,18 @@ class LangChainRAG:
     
     def create_system_prompt(self) -> str:
         """Create system prompt for RAG with context awareness"""
-        return """You are an intelligent assistant that answers questions based on provided documents and conversation context.
+        return """You are a helpful, intelligent AI assistant that answers questions using provided documents and conversation context.
 
-Instructions:
-- Answer ONLY using information from the provided context and previous conversation
-- If information is not available, say "I cannot answer this based on provided documents"
+INSTRUCTIONS:
+- Use the provided context and conversation history as your primary references
+- Apply deep reasoning and logical connections between information sources
+- If information is not available, state: "I cannot answer this based on provided documents"
 - Always cite source documents and page numbers when referencing them
-- Be aware of the conversation history and refer to previous points when relevant
-- Be accurate, concise, and maintain conversation continuity
-- Match the language style of the question"""
+- Be aware of conversation history and refer to previous points when relevant
+- Explain naturally, clearly, and maintain conversational continuity
+- You may summarize, reorganize, and reason through information logically
+- Match the language style and complexity appropriate to the question
+- Use step-by-step reasoning internally, but provide cohesive responses"""
     
     def format_context(self, contexts: List[Dict]) -> str:
         """Format search results as context"""

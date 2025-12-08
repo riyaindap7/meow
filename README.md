@@ -93,6 +93,13 @@ cd backend
 python -m uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+The application will be available at:
+- Frontend: http://localhost:3000
+- Backend API: http://localhost:8000
+- API Docs: http://localhost:8000/docs
+
+## 📚 Core Dependencies
+
 ### Start Frontend
 
 ```bash
@@ -108,7 +115,6 @@ The application will be available at:
 ## 📚 Core Dependencies
 
 ### Backend
-<<<<<<< HEAD
 - **FastAPI** (0.109.0+) - High-performance API framework
 - **LangChain** (0.1.0+) - RAG orchestration and memory management
 - **LangChain Core** (0.1.23+) - Core LangChain functionality
@@ -119,12 +125,6 @@ The application will be available at:
 - **PyJWT** (2.8.0+) - Authentication tokens
 - **google-api-python-client** - Google Drive integration
 - **beautifulsoup4** - Web scraping
-=======
-
-```bash
-cd backend && venv\Scripts\activate && python -m uvicorn backend.api.main:app --reload
-```
->>>>>>> 74e011eb5188dd4f762f3e61445ddf615711a395
 
 ### Frontend
 - **Next.js** (16.0.3) - React framework

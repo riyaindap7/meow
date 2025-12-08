@@ -12,6 +12,7 @@ pymilvus>=2.4.0
 
 # Embedding & ML
 sentence-transformers>=2.3.0
+FlagEmbedding>=1.2.10
 torch>=2.0.0
 transformers>=4.36.0
 
@@ -45,6 +46,9 @@ lxml>=5.0.0
 aiofiles>=23.2.0
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> ca19352756dc3b85674664fcb5975ccb2242cb20
 # LangChain Full Integration
 langchain>=0.1.0
 langchain-core>=0.1.23
@@ -61,7 +65,11 @@ numpy>=1.24.0
 tqdm>=4.65.0
 
 # Progress Bar
+<<<<<<< HEAD
 tqdm>=4.65.0
 =======
 FlagEmbedding
 >>>>>>> 74e011eb5188dd4f762f3e61445ddf615711a395
+=======
+tqdm>=4.65.0
+>>>>>>> ca19352756dc3b85674664fcb5975ccb2242cb20

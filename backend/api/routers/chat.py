@@ -6,7 +6,7 @@ router = APIRouter()
 class ChatRequest(BaseModel):
     collection_name: str
     query: str
-    top_k: int = 5
+    top_k: int = 10
 
 @router.post("/")
 async def chat(request: ChatRequest):
