@@ -27,7 +27,7 @@ export default function ChatPage() {
         if (userId) {
           // Use the MongoDB ObjectId as the auth token
           setAuthToken(String(userId));
-          console.log('✅ Auth token set for user:', session.user.name || session.user.email);
+          console.log('Auth token set for user:', session.user.name || session.user.email);
         } else {
           console.error('No user ID found in session');
           router.push('/');

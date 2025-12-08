@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "@motionone/react": "^10.16.4",
+    "framer-motion": "^12.23.25",
+    "motion": "^12.23.25"
+  }
+}

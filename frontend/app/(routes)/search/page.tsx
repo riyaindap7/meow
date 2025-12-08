@@ -27,7 +27,6 @@ interface RAGResponse {
 
 export default function Search() {
   const { theme } = useTheme();
-  const isDark = theme === "dark";
 
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
@@ -66,7 +65,7 @@ export default function Search() {
         const errorText = await response.text();
         console.log("Search error:", errorText);
         console.log("Response status:", response.status);
-        
+
         if (response.status === 503) {
           setMessage("❌ Backend service unavailable. Please start the backend server.");
         } else if (response.status === 500) {
@@ -100,7 +99,7 @@ export default function Search() {
 
       const data = await response.json();
       console.log("RAG Response:", data);
-      
+
       if (data.sources && data.sources.length > 0) {
         console.log(`📚 Retrieved ${data.sources.length} relevant chunks:`);
         data.sources.forEach((source: any, idx: number) => {
@@ -117,7 +116,7 @@ export default function Search() {
       }
     } catch (err) {
       console.log("Ask error:", err);
-      
+
       if (err instanceof TypeError) {
         if (err.message.includes("Failed to fetch")) {
           setMessage("❌ Cannot connect to backend. Is the server running on http://localhost:8000?");
@@ -131,7 +130,7 @@ export default function Search() {
       } else {
         setMessage("❌ An unexpected error occurred. Please check the backend logs.");
       }
-      
+
       setResults(null);
     } finally {
       setSearching(false);
@@ -139,25 +138,22 @@ export default function Search() {
   }
 
   return (
-    <main className={`min-h-screen transition-colors duration-300 ${
-      isDark ? "bg-neutral-950 text-white" : "bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 text-gray-900"
-    }`}>
+    <main
+      data-theme={theme}
+      className="min-h-screen bg-black text-gray-100 transition-colors duration-300"
+    >
       {/* Header with Navigation */}
-      <header className={`border-b backdrop-blur sticky top-0 z-50 ${
-        isDark ? "border-neutral-800 bg-neutral-900/50" : "border-gray-200 bg-gray-50/50"
-      }`}>
+      <header className="border-b border-neutral-900 bg-neutral-950/80 backdrop-blur sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
           <div>
-            <h1 className={`text-2xl font-bold ${isDark ? "text-cyan-400" : "text-blue-600"}`}>Victor</h1>
-            <p className={`text-xs ${isDark ? "text-gray-500" : "text-gray-600"} mt-1`}>Document Search & Analysis</p>
+            <h1 className="text-2xl font-bold text-gray-100">Victor</h1>
+            <p className="text-xs text-gray-500 mt-1">Document Search & Analysis</p>
           </div>
           <div className="flex gap-3 items-center">
             <ThemeToggle />
             <Link
               href="/"
-              className={`text-sm transition-colors ${
-                isDark ? "text-gray-400 hover:text-cyan-400" : "text-gray-600 hover:text-blue-600"
-              }`}
+              className="text-sm text-gray-400 hover:text-gray-100 transition-colors"
             >
               ← Back to Home
             </Link>
@@ -168,20 +164,16 @@ export default function Search() {
       {/* Main Content */}
       <div className="max-w-6xl mx-auto px-6 py-16">
         {/* Search Section */}
-        <section className={`mb-16 rounded-3xl p-12 transition-all ${
-          isDark
-            ? "bg-gradient-to-br from-cyan-950/40 to-blue-950/40 border-2 border-cyan-600/30 shadow-2xl shadow-cyan-500/10"
-            : "bg-gradient-to-br from-blue-100/60 to-indigo-100/40 border-2 border-blue-300 shadow-2xl shadow-blue-500/20"
-        }`}>
+        <section className="mb-16 rounded-3xl p-12 bg-neutral-950 border border-neutral-900 shadow-2xl shadow-black/60">
           <div className="space-y-8">
             {/* Title */}
             <div>
-              <h2 className={`text-5xl font-black mb-3 bg-clip-text text-transparent ${
-                isDark
-                  ? "bg-gradient-to-r from-cyan-300 to-blue-400"
-                  : "bg-gradient-to-r from-blue-600 to-indigo-600"
-              }`}>Ask a Question</h2>
-              <p className={`text-lg ${isDark ? "text-gray-300" : "text-gray-700"}`}>Search across all your uploaded documents with AI-powered intelligence</p>
+              <h2 className="text-5xl font-black mb-3 text-gray-50">
+                Ask a Question
+              </h2>
+              <p className="text-lg text-gray-400">
+                Search across all your uploaded documents with AI-powered intelligence
+              </p>
             </div>
 
             {/* Search Input */}
@@ -191,37 +183,27 @@ export default function Search() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="What do you want to know?"
-                className={`flex-1 px-6 py-4 text-lg rounded-xl focus:outline-none focus:ring-2 transition-all font-medium ${
-                  isDark
-                    ? "bg-neutral-900/80 border-2 border-cyan-600/50 text-white placeholder-gray-500 focus:border-cyan-400 focus:ring-cyan-500/30 shadow-lg"
-                    : "bg-white/90 border-2 border-blue-400 text-gray-900 placeholder-gray-500 focus:border-blue-600 focus:ring-blue-500/30 shadow-lg"
-                }`}
+                className="flex-1 px-6 py-4 text-lg rounded-xl bg-neutral-900 border border-neutral-700 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-gray-400 shadow-lg"
                 disabled={searching}
               />
               <button
                 type="submit"
                 disabled={searching || !query.trim()}
-                className={`px-10 py-4 rounded-xl font-bold text-lg transition-all shadow-lg ${
-                  isDark
-                    ? "bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 disabled:from-neutral-700 disabled:to-neutral-700 text-white hover:shadow-xl hover:shadow-cyan-500/40"
-                    : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:from-gray-400 disabled:to-gray-400 text-white hover:shadow-xl hover:shadow-blue-500/40"
-                }`}
+                className="px-10 py-4 rounded-xl font-bold text-lg bg-neutral-800 hover:bg-neutral-700 disabled:bg-neutral-900 text-gray-100 transition-all shadow-lg disabled:cursor-not-allowed"
               >
-                {searching ? "🔄 Analyzing..." : "🔍 Search"}
+                {searching ? "🔄 Analyzing..." : "Search"}
               </button>
             </form>
 
             {/* Status Message */}
             {message && (
-              <div className={`px-6 py-4 rounded-xl text-base font-semibold border-2 backdrop-blur-sm ${
-                message.startsWith("✅")
-                  ? isDark
-                    ? "bg-emerald-900/40 text-emerald-200 border-emerald-600 shadow-lg shadow-emerald-500/20"
-                    : "bg-green-100 text-green-800 border-green-400 shadow-lg shadow-green-500/20"
-                  : isDark
-                  ? "bg-red-900/40 text-red-200 border-red-600 shadow-lg shadow-red-500/20"
-                  : "bg-red-100 text-red-800 border-red-400 shadow-lg shadow-red-500/20"
-              }`}>
+              <div
+                className={`px-6 py-4 rounded-xl text-base font-semibold border backdrop-blur-sm ${
+                  message.startsWith("✅")
+                    ? "bg-neutral-900 text-gray-100 border-neutral-600 shadow-lg shadow-black/40"
+                    : "bg-neutral-950 text-gray-200 border-neutral-700 shadow-lg shadow-black/50"
+                }`}
+              >
                 {message}
               </div>
             )}
@@ -232,14 +214,16 @@ export default function Search() {
         {results && (
           <section className="space-y-8">
             {/* AI Answer */}
-            <div className="border border-cyan-800/50 rounded-lg p-8 bg-gradient-to-br from-cyan-900/10 to-blue-900/10">
+            <div className="border border-neutral-800 rounded-xl p-8 bg-neutral-950/80">
               <div className="flex items-start justify-between mb-6">
                 <div>
-                  <h3 className="text-2xl font-bold text-cyan-300 mb-1">Answer</h3>
-                  <p className="text-xs text-gray-500">Generated by {results.model_used}</p>
+                  <h3 className="text-2xl font-bold text-gray-100 mb-1">Answer</h3>
+                  <p className="text-xs text-gray-500">
+                    Generated by {results.model_used}
+                  </p>
                 </div>
               </div>
-              <div className="text-gray-100 leading-relaxed whitespace-pre-wrap text-base">
+              <div className="text-gray-200 leading-relaxed whitespace-pre-wrap text-base">
                 {results.answer}
               </div>
             </div>
@@ -247,44 +231,49 @@ export default function Search() {
             {/* Sources */}
             <div>
               <div className="mb-6">
-                <h3 className="text-2xl font-bold mb-2">Referenced Sources</h3>
-                <p className="text-gray-500 text-sm">{results.sources?.length || 0} document chunks used</p>
+                <h3 className="text-2xl font-bold mb-2 text-gray-100">
+                  Referenced Sources
+                </h3>
+                <p className="text-gray-500 text-sm">
+                  {results.sources?.length || 0} document chunks used
+                </p>
               </div>
 
               <div className="grid gap-4">
                 {results.sources?.map((source, index) => (
                   <article
                     key={index}
-                    className="border border-neutral-700 rounded-lg p-5 hover:border-cyan-600/50 hover:bg-neutral-900/30 transition-all duration-200"
+                    className="border border-neutral-800 rounded-lg p-5 hover:border-neutral-500 hover:bg-neutral-950 transition-all duration-200"
                   >
                     {/* Source Header */}
-                    <div className="flex items-start justify-between mb-4 pb-4 border-b border-neutral-800">
+                    <div className="flex items-start justify-between mb-4 pb-4 border-b border-neutral-900">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-2">
-                          <span className="inline-block bg-cyan-900/40 text-cyan-300 px-3 py-1 rounded text-xs font-bold border border-cyan-700/50">
+                          <span className="inline-block bg-neutral-900 text-gray-200 px-3 py-1 rounded text-xs font-bold border border-neutral-700">
                             #{index + 1}
                           </span>
-                          <span className="text-xs text-gray-500">•</span>
-                          <span className="text-sm font-medium text-cyan-400">{source.source_file}</span>
+                          <span className="text-xs text-gray-600">•</span>
+                          <span className="text-sm font-medium text-gray-200">
+                            {source.source_file}
+                          </span>
                         </div>
                         <div className="flex gap-4 flex-wrap">
-                          <div className="flex items-center gap-1 text-xs text-gray-400">
-                            <span className="text-blue-400">📄</span>
+                          <div className="flex items-center gap-1 text-xs text-gray-500">
+                            <span></span>
                             <span>Page {source.page_idx}</span>
                           </div>
-                          <div className={`flex items-center gap-1 text-xs font-semibold ${
-                            source.score > 0.7 ? 'text-emerald-400' :
-                            source.score > 0.5 ? 'text-cyan-400' : 'text-amber-400'
-                          }`}>
-                            <span>🎯</span>
-                            <span>Match: {(source.score * 100).toFixed(0)}%</span>
+                          <div className="flex items-center gap-1 text-xs font-semibold text-gray-400">
+                            <span></span>
+                            <span>
+                              Match: {(source.score * 100).toFixed(0)}%
+                            </span>
                           </div>
                         </div>
                       </div>
                     </div>
 
                     {/* Source Content */}
-                    <div className="text-gray-300 text-sm leading-relaxed bg-neutral-900/40 rounded border-l-2 border-cyan-600/50 pl-4 py-3 mb-4">
+                    <div className="text-gray-300 text-sm leading-relaxed bg-neutral-950 rounded border-l-2 border-neutral-600 pl-4 py-3 mb-4">
                       {source.text}
                     </div>
 
@@ -292,9 +281,9 @@ export default function Search() {
                     <div className="flex gap-2">
                       <button
                         onClick={() => setSelectedSourceIndex(index)}
-                        className="text-xs px-4 py-2 bg-cyan-900/30 hover:bg-cyan-900/50 text-cyan-400 rounded border border-cyan-700/50 transition-colors font-medium"
+                        className="text-xs px-4 py-2 bg-neutral-900 hover:bg-neutral-800 text-gray-200 rounded border border-neutral-700 transition-colors font-medium"
                       >
-                        📖 View PDF & Highlight
+                        View PDF & Highlight
                       </button>
                     </div>
                   </article>
@@ -307,9 +296,14 @@ export default function Search() {
         {/* Empty State */}
         {!results && !searching && (
           <div className="text-center py-16">
-            <div className="text-5xl mb-4">🔍</div>
-            <h3 className="text-xl font-semibold text-gray-300 mb-2">Ready to search</h3>
-            <p className="text-gray-500">Enter a question above to find relevant information in your documents</p>
+            <div className="text-5xl mb-4"></div>
+            <h3 className="text-xl font-semibold text-gray-100 mb-2">
+              Ready to search
+            </h3>
+            <p className="text-gray-500">
+              Enter a question above to find relevant information in your
+              documents
+            </p>
           </div>
         )}
 
@@ -318,75 +312,89 @@ export default function Search() {
           <div className="text-center py-16">
             <div className="inline-block">
               <div className="animate-spin text-4xl mb-4">⚙️</div>
-              <h3 className="text-xl font-semibold text-gray-300 mb-2">Searching documents</h3>
-              <p className="text-gray-500 text-sm">This may take a moment...</p>
+              <h3 className="text-xl font-semibold text-gray-100 mb-2">
+                Searching documents
+              </h3>
+              <p className="text-gray-500 text-sm">
+                This may take a moment...
+              </p>
             </div>
           </div>
         )}
       </div>
 
       {/* PDF Viewer Modal */}
-      {selectedSourceIndex !== null && results && results.sources[selectedSourceIndex] && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div className="bg-neutral-900 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col border border-neutral-700 shadow-2xl">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between p-6 border-b border-neutral-700">
-              <div className="flex-1">
-                <h2 className="text-2xl font-bold text-cyan-400 mb-1">
-                  {results.sources[selectedSourceIndex].source_file}
-                </h2>
-                <p className="text-sm text-gray-400">
-                  📄 Page {results.sources[selectedSourceIndex].page_idx} • 
-                  🎯 Relevance: {(results.sources[selectedSourceIndex].score * 100).toFixed(1)}%
-                </p>
+      {selectedSourceIndex !== null &&
+        results &&
+        results.sources[selectedSourceIndex] && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <div className="bg-neutral-950 rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col border border-neutral-800 shadow-2xl shadow-black">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between p-6 border-b border-neutral-800">
+                <div className="flex-1">
+                  <h2 className="text-2xl font-bold text-gray-100 mb-1">
+                    {results.sources[selectedSourceIndex].source_file}
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    📄 Page {results.sources[selectedSourceIndex].page_idx} • 
+                    Relevance:{" "}
+                    {(
+                      results.sources[selectedSourceIndex].score * 100
+                    ).toFixed(1)}
+                    %
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelectedSourceIndex(null)}
+                  className="text-gray-500 hover:text-gray-200 text-2xl transition-colors"
+                  aria-label="Close PDF viewer"
+                >
+                  ✕
+                </button>
               </div>
-              <button
-                onClick={() => setSelectedSourceIndex(null)}
-                className="text-gray-400 hover:text-cyan-400 text-2xl transition-colors"
-                aria-label="Close PDF viewer"
-              >
-                ✕
-              </button>
-            </div>
 
-            {/* Modal Content */}
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="bg-neutral-950 rounded p-4 border border-neutral-700">
-                {/* Referenced Text Highlight */}
-                <div className="mb-6">
-                  <h3 className="text-sm font-semibold text-cyan-400 uppercase tracking-wide mb-3">
-                    Referenced Text
-                  </h3>
-                  <div className="bg-neutral-900/50 border-l-4 border-cyan-500 p-4 rounded text-gray-200 leading-relaxed text-sm whitespace-pre-wrap font-mono">
-                    {results.sources[selectedSourceIndex].text}
+              {/* Modal Content */}
+              <div className="flex-1 overflow-y-auto p-6">
+                <div className="bg-black rounded p-4 border border-neutral-800">
+                  {/* Referenced Text Highlight */}
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide mb-3">
+                      Referenced Text
+                    </h3>
+                    <div className="bg-neutral-950 border-l-4 border-neutral-600 p-4 rounded text-gray-100 leading-relaxed text-sm whitespace-pre-wrap font-mono">
+                      {results.sources[selectedSourceIndex].text}
+                    </div>
+                  </div>
+
+                  {/* Note */}
+                  <div className="flex items-start gap-3 p-3 bg-neutral-900 border border-neutral-800 rounded text-xs text-gray-300">
+                    <span className="mt-0.5">ℹ️</span>
+                    <p>
+                      This is the exact text passage extracted from page{" "}
+                      {results.sources[selectedSourceIndex].page_idx} of the
+                      document. Full PDF viewing coming soon.
+                    </p>
                   </div>
                 </div>
+              </div>
 
-                {/* Note */}
-                <div className="flex items-start gap-3 p-3 bg-cyan-900/20 border border-cyan-700/30 rounded text-xs text-gray-300">
-                  <span className="text-cyan-400 mt-0.5">ℹ️</span>
-                  <p>This is the exact text passage extracted from page {results.sources[selectedSourceIndex].page_idx} of the document. Full PDF viewing coming soon.</p>
-                </div>
+              {/* Modal Footer */}
+              <div className="border-t border-neutral-800 p-4 flex gap-3 justify-end bg-neutral-950">
+                <button
+                  onClick={() => setSelectedSourceIndex(null)}
+                  className="px-4 py-2 bg-neutral-800 hover:bg-neutral-700 text-gray-100 rounded transition-colors font-medium"
+                >
+                  Close
+                </button>
               </div>
             </div>
-
-            {/* Modal Footer */}
-            <div className="border-t border-neutral-700 p-4 flex gap-3 justify-end bg-neutral-900/50">
-              <button
-                onClick={() => setSelectedSourceIndex(null)}
-                className="px-4 py-2 bg-neutral-700 hover:bg-neutral-600 text-white rounded transition-colors font-medium"
-              >
-                Close
-              </button>
-            </div>
           </div>
-        </div>
-      )}
+        )}
 
       {/* Footer */}
-      <footer className="border-t border-neutral-800 bg-neutral-900/50 mt-16 py-6">
-        <div className="max-w-6xl mx-auto px-6 text-center text-sm text-gray-500">
-          <p>&copy; 2024 Victor. Powered by Milvus Vector Search & OpenRouter LLM</p>
+      <footer className="border-t border-neutral-900 bg-black mt-16 py-6">
+        <div className="max-w-6xl mx-auto px-6 text-center text-sm text-gray-600">
+          <p>&copy; 2024 Victor. Powered by Milvus Vector Search &amp; OpenRouter LLM</p>
         </div>
       </footer>
     </main>

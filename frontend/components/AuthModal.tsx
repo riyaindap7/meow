@@ -34,13 +34,9 @@ export default function AuthModal({ isOpen, type, onClose, onSuccess }: AuthModa
           role, // Include role in signup
         });
       } else {
-        await signIn.email({
-          email,
-          password,
-        });
+        await signIn.email({ email, password });
       }
-      
-      // Reset form
+
       setEmail('');
       setPassword('');
       setName('');
@@ -57,63 +53,67 @@ export default function AuthModal({ isOpen, type, onClose, onSuccess }: AuthModa
   };
 
   const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
+    if (e.target === e.currentTarget) onClose();
   };
 
   return (
     <div 
-      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50"
+      className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 backdrop-blur-sm"
       onClick={handleOverlayClick}
     >
-      <div className="bg-gray-800 p-8 rounded-lg max-w-md w-full mx-4 border border-gray-700">
+      <div className="bg-[#0f0f0f] p-8 rounded-2xl max-w-md w-full mx-4 border border-white/20 shadow-xl backdrop-blur">
+        
+        {/* Header */}
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-white">
-            {type === 'signup' ? 'Create Account' : 'Sign In'}
+          <h2 className="text-2xl font-semibold text-white">
+            {type === 'signup' ? 'Create Account' : 'Welcome Back'}
           </h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-white text-2xl"
+            className="text-gray-400 hover:text-white transition text-3xl leading-none"
           >
             ×
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          
           {type === 'signup' && (
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Name</label>
+              <label className="text-sm font-medium text-gray-300">Full Name</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full bg-gray-700 border border-gray-600 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
+                className="mt-1 w-full bg-[#1a1a1a] border border-gray-700 rounded-lg p-3 text-white 
+                focus:outline-none focus:border-white/40 transition-colors"
                 required
                 disabled={loading}
               />
             </div>
           )}
-          
+
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Email</label>
+            <label className="text-sm font-medium text-gray-300">Email</label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
+              className="mt-1 w-full bg-[#1a1a1a] border border-gray-700 rounded-lg p-3 text-white
+              focus:outline-none focus:border-white/40 transition-colors"
               required
               disabled={loading}
             />
           </div>
-          
+
           <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">Password</label>
+            <label className="text-sm font-medium text-gray-300">Password</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-gray-700 border border-gray-600 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500"
+              className="mt-1 w-full bg-[#1a1a1a] border border-gray-700 rounded-lg p-3 text-white 
+              focus:outline-none focus:border-white/40 transition-colors"
               required
               disabled={loading}
             />
@@ -137,24 +137,25 @@ export default function AuthModal({ isOpen, type, onClose, onSuccess }: AuthModa
           )}
           
           {error && (
-            <div className="bg-red-900/20 border border-red-500 rounded-lg p-3">
+            <div className="bg-red-900/30 border border-red-500 rounded-lg p-3">
               <p className="text-red-400 text-sm">{error}</p>
             </div>
           )}
-          
-          <div className="flex gap-3">
+
+          <div className="flex gap-3 pt-2">
             <button
               type="submit"
               disabled={loading}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed py-3 rounded-lg font-semibold text-white transition"
+              className="flex-1 bg-white hover:bg-gray-300 text-black disabled:opacity-50 disabled:cursor-not-allowed py-3 rounded-lg font-semibold transition"
             >
-              {loading ? 'Loading...' : (type === 'signup' ? 'Create Account' : 'Sign In')}
+              {loading ? 'Please wait...' : (type === 'signup' ? 'Sign Up' : 'Sign In')}
             </button>
+
             <button
               type="button"
               onClick={onClose}
               disabled={loading}
-              className="px-6 py-3 border border-gray-600 hover:bg-gray-700 disabled:opacity-50 rounded-lg text-gray-300 transition"
+              className="px-6 py-3 border border-white/30 hover:bg-gray-900 disabled:opacity-50 rounded-lg text-gray-300 transition"
             >
               Cancel
             </button>
