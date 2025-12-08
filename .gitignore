@@ -137,3 +137,19 @@ backend/victorDB/chunked_outputs_v2/*.json
 MINERU/
 ZENHANCER/
 mineru.zip
+
+# ============================================
+# Additional Ignored Files
+# ============================================
+# Large data files
+sparse_embeddings.zip
+metadata_extracted.json
+
+# Markdown source files
+MDfiles/
+MDFiles/
+
+# Metadata scripts (if you want to ignore them)
+backend/scripts/extract_metadata_from_md.py
+backend/scripts/enrich_chunks_with_selected_metadata.py
+backend/scripts/enrich_chunks_with_metadata.py
