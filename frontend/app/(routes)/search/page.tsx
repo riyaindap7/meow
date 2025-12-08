@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useTheme } from "@/lib/ThemeContext";
+import VoiceInput from "@/components/VoiceInput";
 
 interface SearchResult {
   text: string;
@@ -36,6 +37,15 @@ export default function Search() {
     vector: "Dense semantic search using embeddings",
     sparse: "Lexical search using BGE-M3 sparse weights",
     hybrid: "Combined dense + sparse with RRF fusion (recommended)",
+  };
+
+  const handleTranscript = (transcript: string) => {
+    setQuery(transcript);
+    setMessage("");
+  };
+
+  const handleVoiceError = (errorMsg: string) => {
+    setMessage(`❌ Voice Error: ${errorMsg}`);
   };
 
   async function handleSearch(e: React.FormEvent) {
@@ -201,6 +211,15 @@ export default function Search() {
                 }`}
                 disabled={searching}
               />
+              
+              {/* Voice Input Button */}
+              <VoiceInput
+                onTranscript={handleTranscript}
+                onError={handleVoiceError}
+                disabled={searching}
+                isDark={isDark}
+              />
+              
               <button
                 type="submit"
                 disabled={searching || !query.trim()}

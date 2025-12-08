@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
+from pydantic import BaseModel
 import os
 import time
 from pathlib import Path
@@ -18,6 +19,11 @@ from .models import (
 )
 from .milvus_client import get_milvus_client
 from .llm_client import get_llm_client
+from backend.services.speech_service import get_speech_service
+
+# Response model for transcription
+class TranscriptResponse(BaseModel):
+    transcript: str
 
 # Lifespan context manager
 @asynccontextmanager
@@ -35,6 +41,12 @@ async def lifespan(app: FastAPI):
         print("✅ LLM client (OpenRouter) initialized")
     except Exception as e:
         print(f"⚠️  LLM client initialization warning: {e}")
+    
+    try:
+        get_speech_service()
+        print("✅ Speech service (ElevenLabs) initialized")
+    except Exception as e:
+        print(f"⚠️  Speech service initialization warning: {e}")
     
     yield
     print("👋 Shutting down API...")
@@ -219,6 +231,54 @@ async def ask(request: RAGRequest):
             detail=f"RAG failed: {str(e)}"
         )
 
+# Voice transcription endpoint
+@app.post("/voice/transcribe", response_model=TranscriptResponse)
+async def transcribe_voice(
+    audio: UploadFile = File(...),
+    language: str = "en"
+):
+    """
+    Transcribe audio to text using ElevenLabs STT.
+    Use the returned transcript with /search or /ask endpoints.
+    
+    Supported formats: mp3, wav, webm, m4a, ogg, flac
+    Supported languages: en, hi, ta, te, bn, mr, gu, kn, ml, pa, etc.
+    """
+    allowed_extensions = {'mp3', 'wav', 'webm', 'm4a', 'ogg', 'flac'}
+    filename = audio.filename or "audio.webm"
+    extension = filename.split('.')[-1].lower()
+    
+    if extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported audio format. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    try:
+        audio_data = await audio.read()
+        
+        if len(audio_data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Empty audio file"
+            )
+        
+        speech_service = get_speech_service()
+        result = await speech_service.transcribe_audio(audio_data, filename, language)
+        
+        print(f"🎤 Transcribed ({language}): '{result['text'][:100]}...'")
+        
+        return TranscriptResponse(transcript=result["text"])
+        
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    except Exception as e:
+        print(f"❌ Transcription error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transcription failed: {str(e)}"
+        )
+
 # Root endpoint
 @app.get("/")
 async def root():
@@ -236,6 +296,7 @@ async def root():
             "health": "/health",
             "search": "/search",
             "ask": "/ask",
+            "voice_transcribe": "/voice/transcribe",
             "pdf": "/pdf/{filename}"
         }
     }

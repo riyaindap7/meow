@@ -1,5 +1,6 @@
 from functools import lru_cache
 from typing import Optional
+import os
 
 from pydantic_settings import BaseSettings
 
@@ -40,6 +41,9 @@ class Settings(BaseSettings):
 
     # Document processing
     CHUNK_SIZE: int = 1000
+
+    # ElevenLabs Configuration
+    ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
 
     class Config:
         env_file = ".env"
