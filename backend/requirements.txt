@@ -29,7 +29,7 @@ python-dotenv>=1.0.0
 
 # Database
 pymongo>=4.6.0
-supabase>=2.0.0
+bson>=0.5.10
 
 # Google Drive API
 google-auth>=2.25.0
@@ -43,3 +43,21 @@ lxml>=5.0.0
 
 # Async Support
 aiofiles>=23.2.0
+
+# LangChain Full Integration
+langchain>=0.1.0
+langchain-core>=0.1.23
+langchain-community>=0.0.20
+langchain-openai>=0.1.0
+langchain-text-splitters>=0.0.1
+langchain-milvus>=0.1.0
+
+# Authentication
+PyJWT>=2.8.0
+
+# Data Processing
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# Progress Bar
+tqdm>=4.65.0

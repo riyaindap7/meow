@@ -123,7 +123,7 @@ class MilvusClient:
     def __init__(self):
         self.host = os.getenv("MILVUS_HOST", "localhost")
         self.port = os.getenv("MILVUS_PORT", "19530")
-        self.collection_name = os.getenv("MILVUS_COLLECTION", "VictorText")
+        self.collection_name = os.getenv("COLLECTION_NAME", "Vtext")
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
        
         # Initialize embedding model
@@ -161,12 +161,12 @@ class MilvusClient:
    
     def search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
         """
-        Search for similar vectors in VictorText collection
+        Search for similar vectors in Vtext collection
        
         Args:
             query: Search query text
             top_k: Number of results to return
-            filter_expr: Optional Milvus filter expression (e.g., 'document_name == "RUSA_final090913"')
+            filter_expr: Optional Milvus filter expression
        
         Returns:
             List of matching chunks with metadata
@@ -182,16 +182,14 @@ class MilvusClient:
             "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
         }
        
-        # Output fields matching VictorText schema
+        # Output fields matching new Vtext schema
         output_fields = [
-            "document_name",
-            "document_id",
-            "chunk_id",
             "global_chunk_id",
+            "document_id",
+            "source_file",
             "page_idx",
             "chunk_index",
             "section_hierarchy",
-            "heading_context",
             "text",
             "char_count",
             "word_count"
@@ -213,14 +211,12 @@ class MilvusClient:
             for hit in hits:
                 formatted_results.append({
                     "score": float(hit.score),
-                    "document_name": hit.entity.get("document_name"),
-                    "document_id": hit.entity.get("document_id"),
-                    "chunk_id": hit.entity.get("chunk_id"),
                     "global_chunk_id": hit.entity.get("global_chunk_id"),
+                    "document_id": hit.entity.get("document_id"),
+                    "source_file": hit.entity.get("source_file"),
                     "page_idx": hit.entity.get("page_idx"),
                     "chunk_index": hit.entity.get("chunk_index"),
                     "section_hierarchy": hit.entity.get("section_hierarchy"),
-                    "heading_context": hit.entity.get("heading_context"),
                     "text": hit.entity.get("text"),
                     "char_count": hit.entity.get("char_count"),
                     "word_count": hit.entity.get("word_count")
@@ -228,26 +224,25 @@ class MilvusClient:
        
         return formatted_results
    
-    def search_by_document(self, query: str, document_name: str, top_k: int = 5) -> List[Dict]:
+    def search_by_document(self, query: str, document_id: str, top_k: int = 5) -> List[Dict]:
         """Search within a specific document"""
-        filter_expr = f'document_name == "{document_name}"'
+        filter_expr = f'document_id == "{document_id}"'
         return self.search(query, top_k, filter_expr)
    
-    def search_by_page(self, query: str, document_name: str, page_idx: int, top_k: int = 3) -> List[Dict]:
+    def search_by_page(self, query: str, document_id: str, page_idx: int, top_k: int = 3) -> List[Dict]:
         """Search within a specific page of a document"""
-        filter_expr = f'document_name == "{document_name}" && page_idx == {page_idx}'
+        filter_expr = f'document_id == "{document_id}" && page_idx == {page_idx}'
         return self.search(query, top_k, filter_expr)
    
     def get_chunk_by_id(self, chunk_id: str) -> Dict:
-        """Retrieve a specific chunk by chunk_id"""
+        """Retrieve a specific chunk by global_chunk_id"""
         collection = self.get_collection()
        
         results = collection.query(
-            expr=f'chunk_id == "{chunk_id}"',
+            expr=f'global_chunk_id == "{chunk_id}"',
             output_fields=[
-                "document_name", "document_id", "chunk_id", "global_chunk_id",
-                "page_idx", "chunk_index", "section_hierarchy", "heading_context",
-                "text", "char_count", "word_count"
+                "global_chunk_id", "document_id", "source_file", "page_idx",
+                "chunk_index", "section_hierarchy", "text", "char_count", "word_count"
             ]
         )
        
@@ -255,16 +250,16 @@ class MilvusClient:
             return results[0]
         return None
    
-    def get_document_chunks(self, document_name: str, limit: int = 100) -> List[Dict]:
+    def get_document_chunks(self, document_id: str, limit: int = 100) -> List[Dict]:
         """Get all chunks from a specific document"""
         collection = self.get_collection()
        
         results = collection.query(
-            expr=f'document_name == "{document_name}"',
+            expr=f'document_id == "{document_id}"',
             limit=limit,
             output_fields=[
-                "document_name", "document_id", "chunk_id", "page_idx",
-                "chunk_index", "heading_context", "text"
+                "global_chunk_id", "document_id", "source_file", "page_idx",
+                "chunk_index", "section_hierarchy", "text"
             ]
         )
        
@@ -274,15 +269,14 @@ class MilvusClient:
         """Get list of all unique documents in collection"""
         collection = self.get_collection()
        
-        # Query all document names (Milvus doesn't have distinct, so we get all and deduplicate)
         results = collection.query(
             expr="chunk_index >= 0",
             limit=10000,
-            output_fields=["document_name"]
+            output_fields=["document_id"]
         )
        
-        # Extract unique document names
-        documents = list(set(r["document_name"] for r in results))
+        # Extract unique document IDs
+        documents = list(set(r["document_id"] for r in results if r.get("document_id")))
         return sorted(documents)
    
     def get_collection_stats(self) -> Dict:
@@ -295,9 +289,8 @@ class MilvusClient:
             "schema": {
                 "embedding_dim": 1024,
                 "fields": [
-                    "document_name", "document_id", "chunk_id", "global_chunk_id",
-                    "page_idx", "chunk_index", "section_hierarchy", "heading_context",
-                    "text", "char_count", "word_count"
+                    "global_chunk_id", "document_id", "source_file", "page_idx",
+                    "chunk_index", "section_hierarchy", "text", "char_count", "word_count"
                 ]
             }
         }
@@ -357,7 +350,8 @@ if __name__ == "__main__":
    
     for i, result in enumerate(results, 1):
         print(f"\n--- Result {i} (Score: {result['score']:.4f}) ---")
-        print(f"Document: {result['document_name']}")
+        print(f"Document: {result['document_id']}")
+        print(f"Source File: {result['source_file']}")
         print(f"Page: {result['page_idx']}")
-        print(f"Heading: {result['heading_context'][:100]}")
+        print(f"Section: {result['section_hierarchy'][:100]}")
         print(f"Text: {result['text'][:200]}...")

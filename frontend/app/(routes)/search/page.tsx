@@ -7,9 +7,15 @@ import { useTheme } from "@/lib/ThemeContext";
 
 interface SearchResult {
   text: string;
-  source: string;
-  page: number;
+  source_file: string;
+  page_idx: number;
   score: number;
+  global_chunk_id?: string;
+  document_id?: string;
+  chunk_index?: number;
+  section_hierarchy?: string;
+  char_count?: number;
+  word_count?: number;
 }
 
 interface RAGResponse {
@@ -259,12 +265,12 @@ export default function Search() {
                             #{index + 1}
                           </span>
                           <span className="text-xs text-gray-500">•</span>
-                          <span className="text-sm font-medium text-cyan-400">{source.source}</span>
+                          <span className="text-sm font-medium text-cyan-400">{source.source_file}</span>
                         </div>
                         <div className="flex gap-4 flex-wrap">
                           <div className="flex items-center gap-1 text-xs text-gray-400">
                             <span className="text-blue-400">📄</span>
-                            <span>Page {source.page}</span>
+                            <span>Page {source.page_idx}</span>
                           </div>
                           <div className={`flex items-center gap-1 text-xs font-semibold ${
                             source.score > 0.7 ? 'text-emerald-400' :
@@ -327,10 +333,10 @@ export default function Search() {
             <div className="flex items-center justify-between p-6 border-b border-neutral-700">
               <div className="flex-1">
                 <h2 className="text-2xl font-bold text-cyan-400 mb-1">
-                  {results.sources[selectedSourceIndex].source}
+                  {results.sources[selectedSourceIndex].source_file}
                 </h2>
                 <p className="text-sm text-gray-400">
-                  📄 Page {results.sources[selectedSourceIndex].page} • 
+                  📄 Page {results.sources[selectedSourceIndex].page_idx} • 
                   🎯 Relevance: {(results.sources[selectedSourceIndex].score * 100).toFixed(1)}%
                 </p>
               </div>
@@ -359,7 +365,7 @@ export default function Search() {
                 {/* Note */}
                 <div className="flex items-start gap-3 p-3 bg-cyan-900/20 border border-cyan-700/30 rounded text-xs text-gray-300">
                   <span className="text-cyan-400 mt-0.5">ℹ️</span>
-                  <p>This is the exact text passage extracted from page {results.sources[selectedSourceIndex].page} of the document. Full PDF viewing coming soon.</p>
+                  <p>This is the exact text passage extracted from page {results.sources[selectedSourceIndex].page_idx} of the document. Full PDF viewing coming soon.</p>
                 </div>
               </div>
             </div>
