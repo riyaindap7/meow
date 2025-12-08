@@ -4,7 +4,7 @@ from datetime import datetime
 
 class QueryRequest(BaseModel):
     query: str
-    top_k: Optional[int] = 5
+    top_k: Optional[int] = 10
     method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
     dense_weight: Optional[float] = 0.7
     sparse_weight: Optional[float] = 0.3

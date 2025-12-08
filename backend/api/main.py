@@ -605,7 +605,7 @@ async def root():
             "admin": {"docs": 20, "temp": 0.0, "dense_weight": 0.8},
             "research_assistant": {"docs": 15, "temp": 0.0, "dense_weight": 0.7},
             "policy_maker": {"docs": 12, "temp": 0.0, "dense_weight": 0.6},
-            "user": {"docs": 5, "temp": 0.2, "dense_weight": 0.5}
+            "user": {"docs": 10, "temp": 0.2, "dense_weight": 0.5}
         },
         "endpoints": {
             "health": "/health",

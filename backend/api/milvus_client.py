@@ -114,7 +114,7 @@ class MilvusClient:
                 })
         return formatted_results
     
-    def search(self, query: str, top_k: int = 5, filter_expr: str = None, 
+    def search(self, query: str, top_k: int = 10, filter_expr: str = None, 
                method: Literal["vector", "sparse", "hybrid"] = "hybrid",
                dense_weight: float = 0.7, sparse_weight: float = 0.3) -> List[Dict]:
         """
@@ -135,7 +135,7 @@ class MilvusClient:
         else:
             return self._vector_search(query, top_k, filter_expr)
     
-    def _vector_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+    def _vector_search(self, query: str, top_k: int = 10, filter_expr: str = None) -> List[Dict]:
         """Dense vector search using HNSW"""
         collection = self.get_collection()
         dense_embedding = self.embed_query_dense(query)
@@ -156,7 +156,7 @@ class MilvusClient:
         
         return self._format_results(results)
     
-    def _sparse_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+    def _sparse_search(self, query: str, top_k: int = 10, filter_expr: str = None) -> List[Dict]:
         """Sparse vector search using inverted index"""
         collection = self.get_collection()
         sparse_embedding = self.embed_query_sparse(query)
@@ -177,7 +177,7 @@ class MilvusClient:
         
         return self._format_results(results)
     
-    def _hybrid_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+    def _hybrid_search(self, query: str, top_k: int = 10, filter_expr: str = None) -> List[Dict]:
         """Hybrid search using RRF fusion of dense + sparse"""
         collection = self.get_collection()
         
@@ -223,17 +223,17 @@ class MilvusClient:
         return self._format_results(results, use_distance=True)
     
     # Specialized search methods with filters
-    def search_by_document(self, query: str, document_id: str, top_k: int = 5) -> List[Dict]:
+    def search_by_document(self, query: str, document_id: str, top_k: int = 10) -> List[Dict]:
         """Search within a specific document"""
         filter_expr = f'document_id == "{document_id}"'
         return self.search(query, top_k, filter_expr)
     
-    def search_by_category(self, query: str, category: str, top_k: int = 5) -> List[Dict]:
+    def search_by_category(self, query: str, category: str, top_k: int = 10) -> List[Dict]:
         """Search within a specific category"""
         filter_expr = f'Category == "{category}"'
         return self.search(query, top_k, filter_expr)
     
-    def search_by_ministry(self, query: str, ministry: str, top_k: int = 5) -> List[Dict]:
+    def search_by_ministry(self, query: str, ministry: str, top_k: int = 10) -> List[Dict]:
         """Search within documents from a specific ministry"""
         filter_expr = f'ministry == "{ministry}"'
         return self.search(query, top_k, filter_expr)
@@ -352,16 +352,16 @@ if __name__ == "__main__":
     query = "What is RUSA?"
     
     print("\n🔍 Vector Search:")
-    results = client.search(query, top_k=3, method="vector")
+    results = client.search(query, top_k=10, method="vector")
     for r in results:
         print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
     
     print("\n🔍 Sparse Search:")
-    results = client.search(query, top_k=3, method="sparse")
+    results = client.search(query, top_k=10, method="sparse")
     for r in results:
         print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
     
     print("\n🔍 Hybrid Search (RRF):")
-    results = client.search(query, top_k=3, method="hybrid")
+    results = client.search(query, top_k=10, method="hybrid")
     for r in results:
         print(f"  [{r['score']:.4f}] {r['text'][:80]}...")

@@ -11,7 +11,7 @@ from sentence_transformers import SentenceTransformer
 MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "pdf_vectors")
-TOP_K = int(os.getenv("TOP_K", "5"))
+TOP_K = int(os.getenv("TOP_K", "10"))
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")  # must match collection
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")  # set your API key in env
 TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))

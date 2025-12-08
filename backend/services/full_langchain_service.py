@@ -376,7 +376,7 @@ Answer:"""
         
         return "\n---\n".join(context_parts)
     
-    def invoke(self, query: str, top_k: int = 5, temperature: float = 0.1):
+    def invoke(self, query: str, top_k: int = 10, temperature: float = 0.1):
         """
         Invoke the TRUE LangChain RAG with role-based parameters
         """
@@ -420,7 +420,7 @@ class DocumentRetriever:
     def __init__(self, milvus_client):
         self.milvus_client = milvus_client
     
-    def retrieve(self, query: str, top_k: int = 5) -> List[Dict]:
+    def retrieve(self, query: str, top_k: int = 10) -> List[Dict]:
         """Retrieve relevant documents"""
         try:
             if self.milvus_client:
@@ -617,7 +617,7 @@ Return only valid JSON, no extra text:"""
             if temperature is None:
                 temperature = 0.1
             if top_k is None:
-                top_k = 5
+                top_k = 10
             if dense_weight is None:
                 dense_weight = 0.6
             if sparse_weight is None:
