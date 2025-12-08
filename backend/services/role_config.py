@@ -34,7 +34,7 @@ ROLE_RAG_PARAMS = {
         "format": "policy_brief"
     },
     "user": {
-        "top_k": 10,
+        "top_k": 5,
         "temperature": 0.2,
         "include_sources": False,
         "max_chars": 800,
@@ -129,7 +129,7 @@ def build_chain_params(user):
     
     # Default: user role
     params = {
-        "top_k": 10, 
+        "top_k": 5, 
         "temperature": 0.2, 
         "include_sources": False, 
         "max_chars": 800,
