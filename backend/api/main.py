@@ -42,6 +42,7 @@ except ImportError:
     def get_speech_service():
         raise ImportError("Speech service not configured")
 import json
+from backend.api.routers import auth
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
@@ -90,8 +91,8 @@ app = FastAPI(
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],  # Frontend URLs
+    allow_credentials=True,  # Important for cookies
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -542,3 +543,5 @@ async def serve_pdf(filename: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to serve PDF: {str(e)}"
         )
+
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])

@@ -1,10 +1,8 @@
-
 "use client";
 
 import React, { useState } from "react";
 import Link from "next/link";
-import DarkVeil from "./DarkVeil";
-import { useSession, signOut } from "@/lib/auth-client";
+import { useAuth } from "@/lib/auth-context"; // CHANGED: Use new auth context
 import { useTheme } from "@/lib/ThemeContext";
 import AuthModal from "./AuthModal";
 import Image from "next/image";
@@ -90,11 +88,11 @@ const Icon = {
 // ========================= Landing Page Component =========================
 export default function Landing() {
   const { theme } = useTheme();
-  const { data: session, isPending } = useSession();
+  const { user, loading, signout } = useAuth(); // CHANGED: Use new auth context
   const [showModal, setShowModal] = useState<"signin" | "signup" | null>(null);
-  const [navOpen, setNavOpen] = useState(false); // for hamburger menu
+  const [navOpen, setNavOpen] = useState(false);
 
-  if (isPending) {
+  if (loading) { // CHANGED: renamed from isPending
     return (
       <div className="flex items-center justify-center min-h-screen bg-black">
         <div className="text-center">
@@ -129,85 +127,84 @@ export default function Landing() {
 
             {/* Right Side: nav + auth */}
             <div className="flex items-center gap-3">
-  {session?.user ? (
-    <>
-      {/* Greeting + Hamburger (Sign Out inside menu) */}
-      <div className="flex items-center gap-2">
-        <span className="text-[11px] text-neutral-200 max-w-[140px] truncate">
-          Hi, {session.user.name || session.user.email}
-        </span>
+              {user ? ( // CHANGED: use user directly
+                <>
+                  {/* Greeting + Hamburger (Sign Out inside menu) */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-neutral-200 max-w-[140px] truncate">
+                      Hi, {user.name || user.email}
+                    </span>
 
-        {/* Hamburger Menu */}
-        <div className="relative">
-          <button
-            onClick={() => setNavOpen((prev) => !prev)}
-            className="p-2 rounded-full border border-white/20 hover:bg-white/10 transition flex items-center justify-center"
-            aria-label="Open navigation menu"
-          >
-            <span className="sr-only">Open navigation</span>
-            <div className="flex flex-col gap-0.5">
-              <span className="w-3.5 h-[1.5px] bg-white rounded-full" />
-              <span className="w-3.5 h-[1.5px] bg-white rounded-full" />
-              <span className="w-3.5 h-[1.5px] bg-white rounded-full" />
+                    {/* Hamburger Menu */}
+                    <div className="relative">
+                      <button
+                        onClick={() => setNavOpen((prev) => !prev)}
+                        className="p-2 rounded-full border border-white/20 hover:bg-white/10 transition flex items-center justify-center"
+                        aria-label="Open navigation menu"
+                      >
+                        <span className="sr-only">Open navigation</span>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="w-3.5 h-[1.5px] bg-white rounded-full" />
+                          <span className="w-3.5 h-[1.5px] bg-white rounded-full" />
+                          <span className="w-3.5 h-[1.5px] bg-white rounded-full" />
+                        </div>
+                      </button>
+
+                      {navOpen && (
+                        <div className="absolute right-0 mt-2 w-40 rounded-2xl bg-black/90 border border-white/15 shadow-xl backdrop-blur-sm py-2 text-sm">
+                          <Link
+                            href="/upload"
+                            onClick={() => setNavOpen(false)}
+                            className="block px-4 py-2 hover:bg-white/10"
+                          >
+                            Upload
+                          </Link>
+                          <Link
+                            href="/search"
+                            onClick={() => setNavOpen(false)}
+                            className="block px-4 py-2 hover:bg-white/10"
+                          >
+                            Search
+                          </Link>
+                          <Link
+                            href="/chat"
+                            onClick={() => setNavOpen(false)}
+                            className="block px-4 py-2 hover:bg-white/10"
+                          >
+                            Chat
+                          </Link>
+                          <button
+                            onClick={() => {
+                              setNavOpen(false);
+                              signout();
+                            }}
+                            className="w-full text-left px-4 py-2 hover:bg-red-500/20 text-red-300"
+                          >
+                            Sign Out
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                // When logged out: Sign In / Sign Up buttons
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setShowModal("signin")}
+                    className="px-3 py-1.5 rounded-full border border-white/30 text-xs font-medium text-neutral-100 hover:bg-white/10 transition"
+                  >
+                    Sign In
+                  </button>
+                  <button
+                    onClick={() => setShowModal("signup")}
+                    className="px-3 py-1.5 rounded-full bg-white text-xs font-semibold text-black hover:bg-neutral-200 transition"
+                  >
+                    Sign Up
+                  </button>
+                </div>
+              )}
             </div>
-          </button>
-
-          {navOpen && (
-            <div className="absolute right-0 mt-2 w-40 rounded-2xl bg-black/90 border border-white/15 shadow-xl backdrop-blur-sm py-2 text-sm">
-              <Link
-                href="/upload"
-                onClick={() => setNavOpen(false)}
-                className="block px-4 py-2 hover:bg-white/10"
-              >
-                Upload
-              </Link>
-              <Link
-                href="/search"
-                onClick={() => setNavOpen(false)}
-                className="block px-4 py-2 hover:bg-white/10"
-              >
-                Search
-              </Link>
-              <Link
-                href="/chat"
-                onClick={() => setNavOpen(false)}
-                className="block px-4 py-2 hover:bg-white/10"
-              >
-                Chat
-              </Link>
-              <button
-                onClick={() => {
-                  setNavOpen(false);
-                  signOut();
-                }}
-                className="w-full text-left px-4 py-2 hover:bg-red-500/20 text-red-300"
-              >
-                Sign Out
-              </button>
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  ) : (
-    // When logged out: Sign In / Sign Up buttons
-    <div className="flex items-center gap-2">
-      <button
-        onClick={() => setShowModal("signin")}
-        className="px-3 py-1.5 rounded-full border border-white/30 text-xs font-medium text-neutral-100 hover:bg-white/10 transition"
-      >
-        Sign In
-      </button>
-      <button
-        onClick={() => setShowModal("signup")}
-        className="px-3 py-1.5 rounded-full bg-white text-xs font-semibold text-black hover:bg-neutral-200 transition"
-      >
-        Sign Up
-      </button>
-    </div>
-  )}
-</div>
-
           </div>
         </header>
 
@@ -243,7 +240,7 @@ export default function Landing() {
 
             {/* Hero CTAs: session-aware */}
             <div className="relative flex gap-4 flex-wrap justify-center">
-              {session?.user ? (
+              {user ? ( // CHANGED
                 <>
                   <Link
                     href="/chat"
@@ -274,7 +271,7 @@ export default function Landing() {
                   </button>
                   <button
                     onClick={() => setShowModal("signup")}
-                    className="inline-flex items-center justify_center px-10 py-4 font-mono font-medium tracking-tighter text-white bg-black border border-white/40 hover:bg-white/5 rounded-lg transition-all transform hover:scale-105"
+                    className="inline-flex items-center justify-center px-10 py-4 font-mono font-medium tracking-tighter text-white bg-black border border-white/40 hover:bg-white/5 rounded-lg transition-all transform hover:scale-105"
                   >
                     Create Account
                   </button>
@@ -289,7 +286,7 @@ export default function Landing() {
               <h2 className="text-4xl font-bold mb-8 text-center text-white">
                 About Victor
               </h2>
-            <div className="max-w-4xl mx-auto bg-neutral-950 border border-neutral-800 rounded-lg p-8 hover:border-neutral-600 transition-all hover:shadow-lg hover:shadow-black/40">
+              <div className="max-w-4xl mx-auto bg-neutral-950 border border-neutral-800 rounded-lg p-8 hover:border-neutral-600 transition-all hover:shadow-lg hover:shadow-black/40">
                 <p className="text-neutral-200 leading-relaxed text-lg">
                   Victor is an advanced AI-powered information retrieval tool
                   designed specifically for navigating the complex web of
@@ -419,7 +416,7 @@ export default function Landing() {
                     ))}
                   </div>
 
-                  {session?.user ? (
+                  {user ? ( // CHANGED
                     <Link
                       href="/upload"
                       className="inline-flex items-center justify-center mt-8 px-10 py-4 bg-white text-black hover:bg-neutral-200 rounded-lg font-medium transition-colors"
@@ -437,7 +434,7 @@ export default function Landing() {
                 </div>
 
                 <div className="bg-neutral-950 border border-neutral-800 rounded-lg p-12 text-center">
-                  <div className="text-4xl mb-4 text-white">DOC</div>
+                  <div className="text-4xl mb-4 text-white">📄</div>
                   <h3 className="text-2xl font-bold mb-4 text-white">
                     Upload & Index
                   </h3>
@@ -465,7 +462,7 @@ export default function Landing() {
                 AI-powered retrieval system today.
               </p>
               <div className="flex gap-4 justify-center">
-                {session?.user ? (
+                {user ? ( // CHANGED
                   <>
                     <Link
                       href="/upload"
@@ -607,16 +604,13 @@ export default function Landing() {
         `}</style>
       </div>
 
-      {/* Auth Modal (shared for sign-in & sign-up) */}
-      <AuthModal
-        isOpen={showModal !== null}
-        type={showModal || "signin"}
-        onClose={() => setShowModal(null)}
-        onSuccess={() => {
-          console.log("Auth successful");
-          setShowModal(null);
-        }}
-      />
+      {/* Auth Modal */}
+      {showModal !== null && (
+        <AuthModal
+          mode={showModal} // CHANGED: renamed from type to mode
+          onClose={() => setShowModal(null)}
+        />
+      )}
     </>
   );
 }
