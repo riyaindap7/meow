@@ -1,33 +1,31 @@
 'use client';
 
-import { useSession, getSession } from "@/lib/auth-client";
+import { useAuth } from "@/lib/auth-context"; // CHANGED: Use new auth context
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import ChatInterface from '@/components/ChatInterface';
 
 export default function ChatPage() {
-  const { data: session, isPending } = useSession();
+  const { user, loading } = useAuth(); // CHANGED: Use new auth context
   const router = useRouter();
   const [authToken, setAuthToken] = useState<string | null>(null);
 
   useEffect(() => {
     const getAuthToken = async () => {
-      if (isPending) return;
+      if (loading) return;
       
-      if (!session?.user) {
+      if (!user) {
         // Redirect to home if not authenticated
         router.push('/');
         return;
       }
       
-      // For Better Auth, use the user ID as token for now
-      // In production, you'd get the actual JWT token from cookies or session
       try {
-        const userId = session.user.id;
+        // Use the MongoDB ObjectId as the auth token
+        const userId = user._id; // CHANGED: Access _id from user object
         if (userId) {
-          // Use the MongoDB ObjectId as the auth token
           setAuthToken(String(userId));
-          console.log('Auth token set for user:', session.user.name || session.user.email);
+          console.log('Auth token set for user:', user.name || user.email);
         } else {
           console.error('No user ID found in session');
           router.push('/');
@@ -39,9 +37,9 @@ export default function ChatPage() {
     };
 
     getAuthToken();
-  }, [session, isPending, router]);
+  }, [user, loading, router]); // CHANGED: Dependencies
 
-  if (isPending || !authToken) {
+  if (loading || !authToken) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-900">
         <div className="text-center">
