@@ -61,23 +61,22 @@ class MongoConversationMemory(BaseMemory):
     
     def load_memory_variables(self, inputs: Dict = None) -> Dict:
         """
-        Load conversation history from MongoDB
+        Load conversation history from separate messages collection
         Returns LangChain Message objects (HumanMessage, AIMessage)
         """
         try:
-            # Find conversation in MongoDB
-            convo = self.collection.find_one({
-                "conversation_id": self.conversation_id,
-                "user_id": self.user_id
-            })
+            from .mongodb_service import mongodb_service
             
-            if not convo or "messages" not in convo:
+            # Get messages from separate collection
+            messages_data = mongodb_service.get_last_messages(self.conversation_id, limit=10)
+            
+            if not messages_data:
                 return {"chat_history": []}
             
             # Convert to LangChain Message objects
             messages = []
             if LANGCHAIN_AVAILABLE:
-                for msg in convo["messages"]:
+                for msg in messages_data:
                     role = msg.get("role", "")
                     content = msg.get("content", "")
                     
@@ -87,11 +86,7 @@ class MongoConversationMemory(BaseMemory):
                         messages.append(AIMessage(content=content))
             else:
                 # Fallback for when LangChain not available
-                for msg in convo["messages"]:
-                    messages.append({
-                        "role": msg.get("role", ""),
-                        "content": msg.get("content", "")
-                    })
+                messages = messages_data
             
             self.chat_memory = messages  # Cache in memory
             return {"chat_history": messages}
@@ -102,14 +97,14 @@ class MongoConversationMemory(BaseMemory):
     
     def save_context(self, inputs: Dict, outputs: Dict):
         """
-        Save conversation context to MongoDB
+        Save conversation context to separate messages collection
         Called automatically by LangChain after chain execution
         """
         try:
-            from datetime import datetime
+            from .mongodb_service import mongodb_service
             
             print("\n" + "="*80)
-            print("💾 SAVE_CONTEXT CALLED - Saving to MongoDB")
+            print("💾 SAVE_CONTEXT CALLED - Saving to Messages Collection")
             print("="*80)
             print(f"   Conversation ID: {self.conversation_id}")
             print(f"   User ID: {self.user_id}")
@@ -120,79 +115,62 @@ class MongoConversationMemory(BaseMemory):
             output_content = outputs.get("output") or outputs.get("text") or outputs.get("response") or ""
             print(f"   Output content (first 100 chars): {output_content[:100]}...")
             
-            user_msg = {
-                "role": "user",
-                "content": inputs.get("input", ""),
-                "timestamp": time.time(),
-                "created_at": datetime.utcnow()
-            }
-            
-            ai_msg = {
-                "role": "assistant", 
-                "content": output_content,
-                "timestamp": time.time(),
-                "created_at": datetime.utcnow(),
-                "sources": outputs.get("sources", [])
-            }
-            
-            # Check if conversation exists
-            print(f"🔍 Checking if conversation exists...")
-            existing = self.collection.find_one({
-                "conversation_id": self.conversation_id,
-                "user_id": self.user_id
-            })
-            
-            if existing:
-                print(f"   ✅ Conversation exists with {len(existing.get('messages', []))} messages")
+            # Ensure conversation exists
+            existing_conversation = mongodb_service.get_conversation(self.conversation_id, self.user_id)
+            if not existing_conversation:
+                # Create conversation with title from first query
+                user_query = inputs.get("input", "")
+                if user_query:
+                    # Generate smart title from first query
+                    title = user_query.strip()
+                    if len(title) > 50:
+                        title = title[:47] + "..."
+                else:
+                    title = "New Conversation"
+                
+                mongodb_service.create_conversation(self.conversation_id, self.user_id, title)
+                print(f"   📝 Created conversation with title: '{title}'")
             else:
-                print(f"   ⚠️ Conversation does NOT exist - will create with upsert")
+                # If this is an existing conversation with "New Conversation" title, update it
+                current_title = existing_conversation.get("title", "")
+                if current_title == "New Conversation" and inputs.get("input", ""):
+                    user_query = inputs.get("input", "")
+                    new_title = user_query.strip()
+                    if len(new_title) > 50:
+                        new_title = new_title[:47] + "..."
+                    
+                    mongodb_service.update_conversation_title(self.conversation_id, self.user_id, new_title)
+                    print(f"   📝 Updated conversation title: '{new_title}'")
+                    
+                    mongodb_service.update_conversation_title(self.conversation_id, self.user_id, new_title)
+                    print(f"   📝 Updated conversation title to: '{new_title}'")
             
-            update_fields = {
-                "$push": {
-                    "messages": {
-                        "$each": [user_msg, ai_msg]
-                    }
-                },
-                "$set": {
-                    "updated_at": datetime.utcnow()
-                }
-            }
-            
-            # If conversation doesn't exist, set initial fields
-            if not existing:
-                update_fields["$setOnInsert"] = {
-                    "created_at": datetime.utcnow(),
-                    "title": inputs.get("input", "")[:50],  # Use first query as title
-                    "archived": False
-                }
-                print(f"   📝 Will create conversation with title: '{inputs.get('input', '')[:50]}'")
-            # If this is the first message (only has 0 messages), update title
-            elif existing and len(existing.get("messages", [])) == 0:
-                update_fields["$set"]["title"] = inputs.get("input", "")[:50]
-                print(f"   📝 Updating title: '{inputs.get('input', '')[:50]}'")
-            
-            # Update MongoDB with new messages
-            print(f"💾 Executing MongoDB update_one...")
-            result = self.collection.update_one(
-                {
-                    "conversation_id": self.conversation_id,
-                    "user_id": self.user_id
-                },
-                update_fields,
-                upsert=True
+            # Add user message
+            user_success = mongodb_service.add_message(
+                conversation_id=self.conversation_id,
+                user_id=self.user_id,
+                role="user",
+                content=inputs.get("input", ""),
+                metadata={}
             )
             
-            print(f"✅ MongoDB update completed!")
-            print(f"   Matched: {result.matched_count}")
-            print(f"   Modified: {result.modified_count}")
-            print(f"   Upserted ID: {result.upserted_id}")
+            # Add assistant message  
+            ai_success = mongodb_service.add_message(
+                conversation_id=self.conversation_id,
+                user_id=self.user_id,
+                role="assistant",
+                content=output_content,
+                metadata={"sources": outputs.get("sources", [])}
+            )
             
-            # Verify it was saved
-            verify = self.collection.find_one({"conversation_id": self.conversation_id})
-            if verify:
-                print(f"✅ VERIFIED: Conversation now has {len(verify.get('messages', []))} messages")
+            if user_success and ai_success:
+                print(f"✅ Messages saved to separate collection!")
+                
+                # Verify messages were saved
+                messages = mongodb_service.get_last_messages(self.conversation_id, limit=2)
+                print(f"   ✅ VERIFIED: Found {len(messages)} messages in conversation")
             else:
-                print(f"❌ VERIFICATION FAILED: Conversation not found after save!")
+                print(f"❌ FAILED to save messages!")
             
             print("="*80 + "\n")
             
@@ -544,6 +522,100 @@ class FullLangChainRAG:
         
         print("✅ Full LangChain RAG with TRUE Memory initialized successfully")
     
+    def _update_conversation_context(self, conversation_id: str, user_id: str, query: str, answer: str, contexts: List[Dict[str, Any]]):
+        """
+        Extract and update conversation context using LLM analysis
+        """
+        if self.conversations_collection is None or not conversation_id:
+            return
+        
+        import json  # Import at the top of the method
+        
+        try:
+            # Get conversation history for context
+            conversation = self.conversations_collection.find_one({
+                "conversation_id": conversation_id,
+                "user_id": user_id
+            })
+            
+            if not conversation:
+                return
+            
+            # Get last few messages for analysis
+            from .mongodb_service import mongodb_service
+            recent_messages = mongodb_service.get_last_messages(conversation_id, limit=6)
+            
+            # Format conversation for analysis
+            conversation_text = "\n".join([
+                f"{msg['role']}: {msg['content']}"
+                for msg in recent_messages[-6:]  # Last 3 exchanges
+            ])
+            
+            # Format contexts for analysis
+            context_info = "\n".join([
+                f"- {ctx.get('source_file', 'Unknown')}: {ctx.get('text', '')[:100]}..."
+                for ctx in contexts[:5]
+            ])
+            
+            # LLM prompt for context extraction
+            context_prompt = f"""
+Analyze this conversation and extract key context information in JSON format.
+
+Conversation:
+{conversation_text}
+
+Relevant Documents:
+{context_info}
+
+Extract and return a JSON object with:
+{{
+  "summary": "Brief 2-sentence summary of the conversation",
+  "topics": ["list", "of", "key", "topics", "discussed"],
+  "main_entities": ["important", "entities", "mentioned"],
+  "user_goal": "What the user seems to be trying to achieve"
+}}
+
+Return only valid JSON, no extra text:"""
+            
+            # Get context extraction with retry logic
+            for attempt in range(3):
+                try:
+                    context_response = self.llm.generate(context_prompt)
+                    context_text = str(context_response)
+                    
+                    # Clean up response
+                    context_text = context_text.strip()
+                    if context_text.startswith('```json'):
+                        context_text = context_text[7:]
+                    if context_text.endswith('```'):
+                        context_text = context_text[:-3]
+                    context_text = context_text.strip()
+                    
+                    # Parse JSON
+                    context_data = json.loads(context_text)
+                    
+                    # Update conversation with extracted context
+                    mongodb_service.update_conversation_context(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        context_data=context_data
+                    )
+                    
+                    print(f"✅ Context extracted and saved for conversation {conversation_id}")
+                    break
+                    
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ Context extraction JSON error (attempt {attempt + 1}): {e}")
+                    if attempt == 2:
+                        print("❌ Failed to extract context after 3 attempts")
+                except Exception as e:
+                    print(f"⚠️ Context extraction error (attempt {attempt + 1}): {e}")
+                    if attempt == 2:
+                        print(f"❌ Failed to extract context: {e}")
+                        
+        except Exception as e:
+            print(f"❌ Error updating conversation context: {e}")
+    
     def ask(self, 
            query: str, 
            conversation_id: str = None, 
@@ -614,6 +686,10 @@ class FullLangChainRAG:
                 })
             
             print("✅ TRUE LangChain RAG completed (memory auto-saved)")
+            
+            # Extract and update conversation context
+            if conversation_id and user_id:
+                self._update_conversation_context(conversation_id, user_id, query, answer, contexts)
             
             return {
                 "answer": answer,

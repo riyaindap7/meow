@@ -393,17 +393,20 @@ async def list_conversations(user: dict = Depends(verify_auth_token)):
 async def get_conversation_messages(conversation_id: str, user: dict = Depends(verify_auth_token)):
     """Get conversation messages for authenticated user only"""
     try:
-        conv_service = get_conversation_service()
+        from services.mongodb_service import mongodb_service
         
-        # ✅ Ensure user owns this conversation
-        conversation = conv_service.get_conversation(conversation_id, user['user_id'])
+        print(f"📖 Retrieved conversation {conversation_id}")
+        
+        # ✅ Ensure user owns this conversation  
+        conversation = mongodb_service.get_conversation(conversation_id, user['user_id'])
         if not conversation:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Conversation not found or access denied"
             )
         
-        messages = conversation.get("messages", [])
+        # Get messages from separate messages collection
+        messages = mongodb_service.get_last_messages(conversation_id, limit=100)
         
         return {
             "conversation_id": conversation_id,
