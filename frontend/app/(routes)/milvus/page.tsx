@@ -5,7 +5,13 @@ import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useTheme } from "@/lib/ThemeContext";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// Use browser's window object for API URL, fallback to localhost
+const getApiUrl = () => {
+  if (typeof window !== 'undefined') {
+    return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  }
+  return "http://localhost:8000";
+};
 
 interface Collection {
   name: string;
@@ -54,47 +60,71 @@ export default function MilvusAdmin() {
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"collections" | "explorer" | "stats">("collections");
   const [message, setMessage] = useState("");
+  const [mounted, setMounted] = useState(false);
 
   // Query form state
   const [queryExpr, setQueryExpr] = useState("");
   const [queryLimit, setQueryLimit] = useState(100);
 
   useEffect(() => {
-    loadCollections();
-    loadServerStatus();
+    setMounted(true);
   }, []);
 
   useEffect(() => {
-    if (selectedCollection) {
+    if (mounted) {
+      loadCollections();
+      loadServerStatus();
+    }
+  }, [mounted]);
+
+  useEffect(() => {
+    if (selectedCollection && mounted) {
       loadCollectionDetails(selectedCollection);
     }
-  }, [selectedCollection]);
+  }, [selectedCollection, mounted]);
 
   async function loadCollections() {
+    if (typeof window === 'undefined') return;
+    
     try {
+      const API_URL = getApiUrl();
       const response = await fetch(`${API_URL}/api/milvus/collections`);
       if (!response.ok) throw new Error("Failed to load collections");
       const data = await response.json();
       setCollections(data.map((name: string) => ({ name })));
     } catch (err) {
       console.error("Error loading collections:", err);
-      setMessage("❌ Failed to load collections");
+      setMessage("❌ Failed to load collections. Is the backend running?");
     }
   }
 
   async function loadServerStatus() {
+    if (typeof window === 'undefined') return;
+    
     try {
+      const API_URL = getApiUrl();
       const response = await fetch(`${API_URL}/api/milvus/server/status`);
       const data = await response.json();
       setServerStatus(data);
     } catch (err) {
       console.error("Error loading server status:", err);
+      setServerStatus({
+        status: "disconnected",
+        host: "unknown",
+        port: "unknown",
+        collections_count: 0,
+        total_entities: 0,
+        error: "Cannot connect to backend"
+      });
     }
   }
 
   async function loadCollectionDetails(collectionName: string) {
+    if (typeof window === 'undefined') return;
+    
     setLoading(true);
     try {
+      const API_URL = getApiUrl();
       const response = await fetch(`${API_URL}/api/milvus/collections/${collectionName}`);
       if (!response.ok) throw new Error("Failed to load collection details");
       const data = await response.json();
@@ -109,10 +139,11 @@ export default function MilvusAdmin() {
   }
 
   async function queryCollection() {
-    if (!selectedCollection) return;
+    if (!selectedCollection || typeof window === 'undefined') return;
 
     setLoading(true);
     try {
+      const API_URL = getApiUrl();
       const response = await fetch(`${API_URL}/api/milvus/collections/${selectedCollection}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -134,6 +165,17 @@ export default function MilvusAdmin() {
     } finally {
       setLoading(false);
     }
+  }
+
+  if (!mounted) {
+    return (
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin text-4xl mb-4">⚙️</div>
+          <p>Loading Milvus Dashboard...</p>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -422,13 +464,107 @@ export default function MilvusAdmin() {
                         <h3 className="text-lg font-semibold mb-2">
                           Results ({queryResults.total_results} found)
                         </h3>
-                        <div className="max-h-[500px] overflow-auto">
-                          <pre className={`p-4 rounded text-xs ${
-                            isDark ? "bg-neutral-800" : "bg-gray-50"
-                          } overflow-x-auto`}>
-                            {JSON.stringify(queryResults.results, null, 2)}
-                          </pre>
+                        
+                        {/* Enhanced Results Display */}
+                        <div className="space-y-4 max-h-[600px] overflow-auto">
+                          {queryResults.results.map((result: any, idx: number) => (
+                            <div 
+                              key={idx} 
+                              className={`p-4 rounded border ${
+                                isDark ? "bg-neutral-800 border-neutral-700" : "bg-gray-50 border-gray-200"
+                              }`}
+                            >
+                              <div className="flex justify-between items-start mb-2">
+                                <h4 className="font-semibold text-sm">
+                                  Document #{idx + 1}
+                                </h4>
+                                <button
+                                  onClick={() => {
+                                    const elem = document.getElementById(`result-${idx}`);
+                                    if (elem) {
+                                      elem.classList.toggle('hidden');
+                                    }
+                                  }}
+                                  className={`text-xs px-2 py-1 rounded ${
+                                    isDark ? "bg-cyan-600 hover:bg-cyan-500" : "bg-blue-600 hover:bg-blue-500"
+                                  } text-white`}
+                                >
+                                  Toggle Details
+                                </button>
+                              </div>
+                              
+                              <div id={`result-${idx}`}>
+                                <div className="space-y-2 text-sm">
+                                  {Object.entries(result).map(([key, value]: [string, any]) => (
+                                    <div key={key} className="border-b border-neutral-700 pb-2">
+                                      <span className={`font-semibold ${isDark ? "text-cyan-400" : "text-blue-600"}`}>
+                                        {key}:
+                                      </span>
+                                      
+                                      {/* Check if this is an embedding field */}
+                                      {value && typeof value === 'object' && value.type === 'embedding' ? (
+                                        <div className="mt-1">
+                                          <div className={`text-xs ${isDark ? "text-gray-400" : "text-gray-600"} mb-1`}>
+                                            Vector Embedding ({value.dimension} dimensions)
+                                          </div>
+                                          
+                                          {/* Preview */}
+                                          <div className={`p-2 rounded text-xs font-mono ${
+                                            isDark ? "bg-neutral-900" : "bg-gray-100"
+                                          }`}>
+                                            <div className="mb-1 font-semibold">Preview (first 5 values):</div>
+                                            <div>[{value.preview.map((v: number) => v.toFixed(4)).join(', ')}...]</div>
+                                          </div>
+                                          
+                                          {/* Expandable full embedding */}
+                                          <details className="mt-2">
+                                            <summary className={`cursor-pointer text-xs ${
+                                              isDark ? "text-cyan-400 hover:text-cyan-300" : "text-blue-600 hover:text-blue-500"
+                                            }`}>
+                                              Show full embedding vector
+                                            </summary>
+                                            <div className={`mt-2 p-2 rounded text-xs font-mono max-h-40 overflow-auto ${
+                                              isDark ? "bg-neutral-900" : "bg-gray-100"
+                                            }`}>
+                                              [{value.full.map((v: number, i: number) => (
+                                                <span key={i}>
+                                                  {v.toFixed(6)}
+                                                  {i < value.full.length - 1 ? ', ' : ''}
+                                                  {(i + 1) % 5 === 0 ? '\n' : ''}
+                                                </span>
+                                              ))}]
+                                            </div>
+                                          </details>
+                                        </div>
+                                      ) : (
+                                        /* Regular field display */
+                                        <span className="ml-2 break-words">
+                                          {typeof value === 'object' 
+                                            ? JSON.stringify(value, null, 2) 
+                                            : String(value)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
+                        
+                        {/* Raw JSON Toggle */}
+                        <details className="mt-4">
+                          <summary className={`cursor-pointer text-sm font-semibold ${
+                            isDark ? "text-cyan-400 hover:text-cyan-300" : "text-blue-600 hover:text-blue-500"
+                          }`}>
+                            View Raw JSON
+                          </summary>
+                          <pre className={`mt-2 p-4 rounded text-xs ${
+                            isDark ? "bg-neutral-800" : "bg-gray-50"
+                          } overflow-x-auto max-h-96`}>
+                            {JSON.stringify(queryResults, null, 2)}
+                          </pre>
+                        </details>
                       </div>
                     )}
                   </div>
