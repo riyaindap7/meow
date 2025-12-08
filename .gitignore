@@ -153,3 +153,22 @@ MDFiles/
 backend/scripts/extract_metadata_from_md.py
 backend/scripts/enrich_chunks_with_selected_metadata.py
 backend/scripts/enrich_chunks_with_metadata.py
+
+# ============================================
+# Test Scripts (Root Directory)
+# ============================================
+check_conversations.py
+test_ask_with_history.py
+test_backend_auth.py
+test_context_maintenance.py
+test_conv_debug.py
+test_conv_flow.py
+test_conversations_collection.py
+test_create_conversations.py
+test_langchain_context.py
+test_messages_endpoint.py
+test_milvus_quick.py
+test_mongo_connection.py
+test_mongo_quick.py
+verify_context_integration.py
+verify_mongodb_storage.py

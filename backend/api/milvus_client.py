@@ -1,8 +1,121 @@
+# from pymilvus import connections, Collection, utility
+# from sentence_transformers import SentenceTransformer
+# import os
+# from typing import List, Dict
+# from dotenv import load_dotenv
+
+# load_dotenv()
+
+# class MilvusClient:
+#     def __init__(self):
+#         self.host = os.getenv("MILVUS_HOST", "localhost")
+#         self.port = os.getenv("MILVUS_PORT", "19530")
+#         self.collection_name = os.getenv("COLLECTION_NAME", "pdf_vectors")
+#         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+        
+#         # Initialize embedding model
+#         print(f"Loading embedding model: {self.embedding_model_name}")
+#         self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        
+#         # Connect to Milvus
+#         self.connect()
+        
+#     def connect(self):
+#         """Connect to Milvus"""
+#         try:
+#             connections.connect("default", host=self.host, port=self.port)
+#             print(f"✅ Connected to Milvus at {self.host}:{self.port}")
+#         except Exception as e:
+#             print(f"❌ Failed to connect to Milvus: {e}")
+#             raise
+    
+#     def get_collection(self) -> Collection:
+#         """Get collection instance"""
+#         if not utility.has_collection(self.collection_name):
+#             raise ValueError(f"Collection '{self.collection_name}' does not exist")
+        
+#         collection = Collection(self.collection_name)
+#         collection.load()
+#         return collection
+    
+#     def embed_query(self, query: str) -> List[float]:
+#         """Generate embedding for query"""
+#         embedding = self.embedding_model.encode(
+#             [query],
+#             normalize_embeddings=True
+#         )
+#         return embedding[0].tolist()
+    
+#     def search(self, query: str, top_k: int = 3) -> List[Dict]:
+#         """Search for similar vectors"""
+#         collection = self.get_collection()
+        
+#         # Generate query embedding
+#         query_embedding = self.embed_query(query)
+        
+#         # Search parameters
+#         search_params = {
+#             "metric_type": "IP",
+#             "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
+#         }
+        
+#         # Execute search
+#         results = collection.search(
+#             data=[query_embedding],
+#             anns_field="embedding",
+#             param=search_params,
+#             limit=top_k,
+#             output_fields=["text", "source", "page"]
+#         )
+        
+#         # Format results
+#         formatted_results = []
+#         for hits in results:
+#             for hit in hits:
+#                 formatted_results.append({
+#                     "text": hit.entity.get("text"),
+#                     "source": hit.entity.get("source"),
+#                     "page": hit.entity.get("page"),
+#                     "score": float(hit.score)
+#                 })
+        
+#         return formatted_results
+    
+#     def health_check(self) -> Dict:
+#         """Check Milvus health"""
+#         try:
+#             collection = self.get_collection()
+#             return {
+#                 "milvus_connected": True,
+#                 "collection_exists": True,
+#                 "total_vectors": collection.num_entities
+#             }
+#         except Exception as e:
+#             return {
+#                 "milvus_connected": False,
+#                 "collection_exists": False,
+#                 "total_vectors": 0,
+#                 "error": str(e)
+#             }
+
+# # Global instance
+# milvus_client = None
+
+# def get_milvus_client() -> MilvusClient:
+#     """Get or create Milvus client singleton"""
+#     global milvus_client
+#     if milvus_client is None:
+#         milvus_client = MilvusClient()
+#     return milvus_client
+
+
+
+
 from pymilvus import connections, Collection, utility, AnnSearchRequest, RRFRanker
-from sentence_transformers import SentenceTransformer, CrossEncoder
+from sentence_transformers import SentenceTransformer
 from FlagEmbedding import BGEM3FlagModel
 import os
-from typing import List, Dict, Literal, Optional, Tuple
+from typing import List, Dict, Literal, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,63 +128,27 @@ class MilvusClient:
         self.collection_name = os.getenv("COLLECTION_NAME", "VictorText2")  # ✅ Changed
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
         
-        # Dense embeddings - SentenceTransformer (for backward compatibility)
+        # Dense embeddings - SentenceTransformer (cached)
         print(f"Loading dense embedding model: {self.embedding_model_name}")
-        self.embedding_model = SentenceTransformer(self.embedding_model_name)
-        self.dense_model = self.embedding_model  # Alias
+        self.dense_model = SentenceTransformer(self.embedding_model_name)
         
-        # Sparse embeddings - FlagEmbedding (only loaded if hybrid search is used)
-        self._sparse_model = None
-        
-        # ✅ Pre-load sparse model if hybrid is enabled
-        if os.getenv("ENABLE_HYBRID_SEARCH", "true").lower() == "true":
-            print(f"🚀 Pre-loading sparse model for hybrid search...")
-            try:
-                _ = self.sparse_model  # Trigger lazy load
-            except Exception as e:
-                print(f"⚠️  Could not pre-load sparse model: {e}")
-    
-        # Initialize re-ranker (lazy loading)
-        self.reranker_model_name = os.getenv("RERANKER_MODEL")
-        self._reranker = None
-        self.enable_reranking = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
+        # Sparse embeddings - FlagEmbedding (only for sparse)
+        print(f"Loading sparse embedding model: {self.embedding_model_name}")
+        self.sparse_model = BGEM3FlagModel(
+            self.embedding_model_name,
+            use_fp16=False  # No fp16
+        )
         
         self.connect()
-    
-    @property
-    def sparse_model(self):
-        """Lazy load sparse model only when needed"""
-        if self._sparse_model is None:
-            try:
-                print(f"⏳ Loading sparse embedding model: {self.embedding_model_name}")
-                print(f"   This may take 30-60 seconds on first run (downloading model)...")
-                print(f"   Subsequent queries will be instant (model cached in memory)")
-                
-                self._sparse_model = BGEM3FlagModel(
-                    self.embedding_model_name,
-                    use_fp16=False,
-                    device='cpu'  # Force CPU to avoid GPU issues
-                )
-                
-                print(f"✅ Sparse model loaded successfully")
-                
-            except Exception as e:
-                print(f"❌ Error loading sparse model: {e}")
-                print(f"⚠️  Falling back to dense-only search")
-                import traceback
-                traceback.print_exc()
-                return None  # Return None instead of storing None
-    
-        return self._sparse_model
-    
+        
     @property
     def reranker(self):
         """Lazy load re-ranker only when needed"""
         if self._reranker is None and self.enable_reranking:
             print(f"Loading re-ranker model: {self.reranker_model_name}")
             self._reranker = CrossEncoder(self.reranker_model_name)
-        return self._reranker
-        
+        return self._reranker    
+    
     def connect(self):
         """Connect to Milvus"""
         try:
@@ -90,15 +167,11 @@ class MilvusClient:
         collection.load()
         return collection
     
-    def embed_query(self, query: str) -> List[float]:
-        """Generate dense embedding (backward compatible)"""
-        return self.embed_query_dense(query)
-    
     def embed_query_dense(self, query: str) -> List[float]:
         """Generate dense embedding using SentenceTransformer"""
         embedding = self.dense_model.encode(
             [query],
-            normalize_embeddings=False  # Keep as False for VictorText compatibility
+            normalize_embeddings=True
         )
         return embedding[0].tolist()
     
@@ -164,6 +237,9 @@ class MilvusClient:
                 score = float(hit.distance) if use_distance else float(hit.score)
                 formatted_results.append({
                     "score": score,
+                    "document_name": hit.entity.get("document_name"),
+                    "document_id": hit.entity.get("document_id"),
+                    "chunk_id": hit.entity.get("chunk_id"),
                     "global_chunk_id": hit.entity.get("global_chunk_id"),
                     "document_id": hit.entity.get("document_id"),
                     "document_name": hit.entity.get("document_name"),  # ✅ VictorText2 field
@@ -188,15 +264,15 @@ class MilvusClient:
         return formatted_results
     
     def search(self, query: str, top_k: int = 5, filter_expr: str = None, 
-               method: Literal["vector", "sparse", "hybrid"] = "vector") -> List[Dict]:
+               method: Literal["vector", "sparse", "hybrid"] = "hybrid") -> List[Dict]:
         """
-        Unified search method (backward compatible with vector-only search)
+        Unified search method
         
         Args:
             query: Search query text
             top_k: Number of results
             filter_expr: Optional Milvus filter expression
-            method: 'vector' (default), 'sparse', or 'hybrid'
+            method: 'vector', 'sparse', or 'hybrid'
         """
         if method == "sparse":
             return self._sparse_search(query, top_k, filter_expr)
@@ -525,17 +601,93 @@ class MilvusClient:
                 ]
             }
         }
-   
+        
+        results = collection.search(
+            data=[dense_embedding],
+            anns_field="dense_embedding",
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=self._get_output_fields()
+        )
+        
+        return self._format_results(results)
+    
+    def _sparse_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+        """Sparse vector search using inverted index"""
+        collection = self.get_collection()
+        sparse_embedding = self.embed_query_sparse(query)
+        
+        search_params = {
+            "metric_type": "IP",
+            "params": {"drop_ratio_search": 0.2}
+        }
+        
+        results = collection.search(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=self._get_output_fields()
+        )
+        
+        return self._format_results(results)
+    
+    def _hybrid_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+        """Hybrid search using RRF fusion of dense + sparse"""
+        collection = self.get_collection()
+        
+        # Get both embeddings
+        dense_embedding = self.embed_query_dense(query)
+        sparse_embedding = self.embed_query_sparse(query)
+        
+        # Dense search request
+        dense_req = AnnSearchRequest(
+            data=[dense_embedding],
+            anns_field="dense_embedding",
+            param={
+                "metric_type": "IP",
+                "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
+            },
+            limit=top_k * 2,
+            expr=filter_expr  # Filter goes here
+        )
+        
+        # Sparse search request
+        sparse_req = AnnSearchRequest(
+            data=[sparse_embedding],
+            anns_field="sparse_embedding",
+            param={
+                "metric_type": "IP",
+                "params": {"drop_ratio_search": 0.2}
+            },
+            limit=top_k * 2,
+            expr=filter_expr  # Filter goes here
+        )
+        
+        # RRF Ranker
+        ranker = RRFRanker(k=60)
+        
+        # Execute hybrid search - removed expr from here
+        results = collection.hybrid_search(
+            reqs=[dense_req, sparse_req],
+            rerank=ranker,
+            limit=top_k,
+            output_fields=self._get_output_fields()
+        )
+        
+        return self._format_results(results, use_distance=True)
+    
     def health_check(self) -> Dict:
-        """Check Milvus health and capabilities"""
+        """Check Milvus health and hybrid search support"""
         try:
             collection = self.get_collection()
-            documents = self.list_documents()
             
             schema = collection.schema
-            has_sparse = self._has_field("sparse_embedding")
-            has_dense = self._has_field("dense_embedding") or self._has_field("embedding")
-           
+            has_sparse = any(f.name == "sparse_embedding" for f in schema.fields)
+            has_dense = any(f.name == "dense_embedding" for f in schema.fields)
+            
             return {
                 "milvus_connected": True,
                 "collection_exists": True,
@@ -559,7 +711,7 @@ class MilvusClient:
             }
 
 
-# Global instance
+# Global singleton
 milvus_client = None
 
 
@@ -574,31 +726,27 @@ def get_milvus_client() -> MilvusClient:
 # Example usage
 if __name__ == "__main__":
     client = get_milvus_client()
-   
-    # Health check
+    
     print("\n🏥 Health Check:")
-    health = client.health_check()
-    for key, value in health.items():
-        print(f"  {key}: {value}")
-   
+    print(client.health_check())
+    
+    print("\n📚 Available Documents:")
+    docs = client.list_documents()
+    print(f"Found {len(docs)} documents")
+    
     query = "What is RUSA?"
     
-    # Test different search methods
     print("\n🔍 Vector Search:")
     results = client.search(query, top_k=3, method="vector")
     for r in results:
         print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
     
-    # If hybrid is enabled
-    if health.get('hybrid_enabled'):
-        print("\n🔍 Hybrid Search (RRF):")
-        results = client.search(query, top_k=3, method="hybrid")
-        for r in results:
-            print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
-    
-    # With reranking
-    print("\n🔍 Vector Search + Reranking:")
-    results = client.search_with_rerank(query, top_k=3, method="vector")
+    print("\n🔍 Sparse Search:")
+    results = client.search(query, top_k=3, method="sparse")
     for r in results:
-        print(f"  [{r['score']:.4f}] Vector: {r.get('vector_score', 0):.4f} | Rerank: {r.get('rerank_score', 0):.4f}")
-        print(f"      {r['text'][:80]}...")
+        print(f"  [{r['score']:.4f}] {r['text'][:80]}...")
+    
+    print("\n🔍 Hybrid Search (RRF):")
+    results = client.search(query, top_k=3, method="hybrid")
+    for r in results:
+        print(f"  [{r['score']:.4f}] {r['text'][:80]}...")

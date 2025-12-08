@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data (don't copy large data into image)
+data/local_storage/uploads/*
+data/local_storage/processed/*
+data/local_storage/scraped_moe_monthly_achivements/*
+data/processed/*
+
+# Keep directory structure but ignore contents
+!data/local_storage/uploads/.gitkeep
+!data/local_storage/processed/.gitkeep
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+docs/
+
+# Tests
+tests/
+test_*.py
+
+# Service account (will be mounted as volume)
+*ServiceAccountKey.json

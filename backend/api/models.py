@@ -2,11 +2,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Dict, Literal
 from datetime import datetime
 
+
 class QueryRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
     top_k: Optional[int] = Field(3, description="Number of results to retrieve", ge=1, le=10)
     method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
-        "vector",  # Default to vector for backward compatibility
+        "hybrid", 
         description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
     )
 
@@ -16,9 +17,9 @@ class SearchResult(BaseModel):
     source_file: str  # Changed from 'source'
     page_idx: int  # Changed from 'page'
     score: float
-    # Vtext schema fields
-    global_chunk_id: Optional[str] = None
     document_id: Optional[str] = None
+    chunk_id: Optional[str] = None
+    global_chunk_id: Optional[str] = None
     chunk_index: Optional[int] = None
     section_hierarchy: Optional[str] = None
     char_count: Optional[int] = None
@@ -30,17 +31,17 @@ class SearchResponse(BaseModel):
     results: List[SearchResult]
     count: int
     latency_ms: float
-    method: str = "vector"  # Which search method was used
+    method: str = "hybrid"
 
 class RAGRequest(BaseModel):
     query: str = Field(..., description="User query text", min_length=1)
     top_k: Optional[int] = Field(3, description="Number of context chunks", ge=1, le=10)
     temperature: Optional[float] = Field(0.0, description="LLM temperature", ge=0.0, le=1.0)
+    conversation_id: Optional[str] = None  # ✅ Make sure this line exists
     method: Optional[Literal["vector", "sparse", "hybrid"]] = Field(
-        "vector",  # Default to vector for backward compatibility
+        "hybrid", 
         description="Search method: vector (dense), sparse, or hybrid (RRF fusion)"
     )
-    conversation_id: Optional[str] = Field(None, description="Conversation ID for history tracking")  # Add this line
 
 class RAGResponse(BaseModel):
     """RAG response with answer and sources"""
@@ -51,7 +52,7 @@ class RAGResponse(BaseModel):
     search_latency_ms: float
     llm_latency_ms: float
     total_latency_ms: float
-    method: str = "vector"  # Which search method was used
+    method: str = "hybrid"
 
 class HealthResponse(BaseModel):
     status: str

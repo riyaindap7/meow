@@ -101,7 +101,6 @@ Answer:"""
             
             # Create the prompt
             prompt = f"""You are a helpful, intelligent AI assistant. Answer the user's question using only the information found in the provided context from multiple documents.
-
 CONTEXT:
 {context_text}
 

@@ -6,10 +6,11 @@ from pathlib import Path
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from fastapi import FastAPI, HTTPException, status, Request, Depends
+from fastapi import FastAPI, HTTPException, status, Request, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
+import os
 import time
 from urllib.parse import quote
 from dotenv import load_dotenv
@@ -19,6 +20,7 @@ from api.milvus_client import get_milvus_client
 from services.full_langchain_service import get_full_langchain_rag
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+from api.routers import milvus_admin
 
 
 # Load .env from project root
@@ -31,7 +33,9 @@ DEFAULT_USER_ID = os.getenv("DEFAULT_USER_ID", "default")
 from .models import (
     QueryRequest, SearchResponse, SearchResult,
     RAGRequest, RAGResponse, HealthResponse,
-    RerankRequest, ComparisonResponse, ComparisonResult, ComparisonMetrics
+    RerankRequest, ComparisonResponse, ComparisonResult, ComparisonMetrics,
+    CreateConversationRequest, ConversationMetadata, ListConversationsResponse,
+    ChatRequest, ChatResponse, ConversationResponse
 )
 from services.mongodb_service import find_documents
 from .milvus_client import get_milvus_client
@@ -54,6 +58,13 @@ def get_self_query_retriever():
         )
         print("✅ Self-Query Retriever initialized (LLM decomposition enabled)")
     return _self_query_retriever
+from .milvus_client import get_milvus_client
+from .llm_client import get_llm_client
+from backend.services.speech_service import get_speech_service
+
+# Response model for transcription
+class TranscriptResponse(BaseModel):
+    transcript: str
 
 # Lifespan context manager
 @asynccontextmanager
@@ -77,15 +88,19 @@ async def lifespan(app: FastAPI):
         print("✅ Self-Query Retriever initialized")
     except Exception as e:
         print(f"⚠️  Self-Query Retriever initialization warning: {e}")
+        get_speech_service()
+        print("✅ Speech service (ElevenLabs) initialized")
+    except Exception as e:
+        print(f"⚠️  Speech service initialization warning: {e}")
     
     yield
     print("👋 Shutting down API...")
 
 # Create FastAPI app
 app = FastAPI(
-    title="PDF RAG API with Hybrid Search",
-    description="Query PDF documents using vector, sparse, or hybrid search with self-query capabilities",
-    version="2.0.0",
+    title="PDF RAG API",
+    description="Query PDF documents using vector search, BM25, or hybrid search",
+    version="1.0.0",
     lifespan=lifespan
 )
 
@@ -97,31 +112,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(milvus_admin.router, prefix="/api/milvus", tags=["Milvus Admin"])
 
-# Pydantic models (keep your existing models)
-class QueryRequest(BaseModel):
-    query: str
-    conversation_id: Optional[str] = None
-    top_k: int = 5
-    temperature: float = 0.1
-
-class CreateConversationRequest(BaseModel):
-    title: str
-    metadata: Dict = {}
-
-class ConversationMetadata(BaseModel):
-    conversation_id: str
-    user_id: str
-    title: Optional[str]
-    created_at: str
-    updated_at: str
-    message_count: int
-
-class ListConversationsResponse(BaseModel):
-    conversations: List[ConversationMetadata]
-    count: int
-
-# Health check endpoint
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Check API and Milvus health"""
@@ -147,13 +139,9 @@ async def health_check():
             detail=f"Health check failed: {str(e)}"
         )
 
-# ============================================================================
-# SEARCH ENDPOINTS
-# ============================================================================
-
 @app.post("/search", response_model=SearchResponse)
 async def search(request: QueryRequest):
-    """Search using vector, sparse, or hybrid method"""
+    """Search using vector, BM25, or hybrid method"""
     try:
         milvus_client = get_milvus_client()
         start_time = time.time()
@@ -167,16 +155,16 @@ async def search(request: QueryRequest):
         
         search_latency = (time.time() - start_time) * 1000
         
-        # Format response with Vtext schema
         search_results = [
             SearchResult(
                 text=result.get('text'),
-                source_file=result.get('source_file'),
-                page_idx=result.get('page_idx'),
+                source_file=result.get('document_name'),  # ✅ Changed to source_file
+                page_idx=result.get('page_idx'),  # ✅ Changed to page_idx
                 score=result.get('score'),
-                # Vtext fields
-                global_chunk_id=result.get('global_chunk_id'),
                 document_id=result.get('document_id'),
+                chunk_id=result.get('chunk_id'),
+                global_chunk_id=result.get('global_chunk_id'),
+                # document_id=result.get('document_id'),  # ❌ REMOVE - duplicate
                 chunk_index=result.get('chunk_index'),
                 section_hierarchy=result.get('section_hierarchy'),
                 char_count=result.get('char_count'),
@@ -469,6 +457,9 @@ async def ask_self_query(request: RAGRequest):
         print(f"⏱️  Client initialization: {init_time:.2f}ms")
         
         # Step 2: Self-query retrieval (includes decomposition + search)
+        total_start = time.time()
+        
+        # Retrieve with chosen method
         search_start = time.time()
         search_results, decomposition = retriever.retrieve(
             query=request.query,
@@ -483,18 +474,39 @@ async def ask_self_query(request: RAGRequest):
         if not search_results:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="No relevant documents found for your query"
+                detail="No relevant documents found"
             )
         
         print(f"\n✅ Found {len(search_results)} relevant documents (with self-query filters)")
         
         # Step 3: Format sources
         format_start = time.time()
+        print(f"📚 Found {len(search_results)} results using {request.method} search")
+        
+        # Step 2: Generate answer using LLM
+        print(f"🤖 Generating answer using model: {llm_client.model}")
+        llm_start = time.time()
+        try:
+            answer = await llm_client.generate_answer(
+                query=request.query,
+                contexts=search_results,
+                temperature=request.temperature
+            )
+        except Exception as llm_err:
+            print(f"❌ LLM Error: {str(llm_err)}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"LLM generation failed: {str(llm_err)}"
+            )
+        
+        llm_latency = (time.time() - llm_start) * 1000
+        total_latency = (time.time() - total_start) * 1000
+        
         sources = [
             SearchResult(
                 text=result.get('text'),
-                source=result.get('document_name'),
-                page=result.get('page_idx'),
+                source_file=result.get('document_name'),  # ✅ Change from source to source_file
+                page_idx=result.get('page_idx'),
                 score=result.get('score'),
                 document_id=result.get('document_id'),
                 chunk_id=result.get('chunk_id'),
@@ -509,26 +521,7 @@ async def ask_self_query(request: RAGRequest):
         format_time = (time.time() - format_start) * 1000
         print(f"⏱️  Source formatting: {format_time:.2f}ms")
         
-        # Step 4: LLM answer generation
-        llm_start = time.time()
-        answer = await llm_client.generate_answer(
-            query=request.query,
-            contexts=search_results,
-            temperature=request.temperature
-        )
-        llm_latency = (time.time() - llm_start) * 1000
-        print(f"⏱️  LLM answer generation: {llm_latency:.2f}ms")
-        
-        total_latency = (time.time() - total_start) * 1000
-        print(f"⏱️  LATENCY BREAKDOWN")
-        print(f"{'='*80}")
-        print(f"  Init:        {init_time:>8.2f}ms")
-        print(f"  Retrieval:   {search_latency:>8.2f}ms  (decomposition + search + rerank)")
-        print(f"  Format:      {format_time:>8.2f}ms")
-        print(f"  LLM:         {llm_latency:>8.2f}ms")
-        print(f"  {'─'*76}")
-        print(f"  TOTAL:       {total_latency:>8.2f}ms")
-        print(f"{'='*80}\n")
+        print(f"✅ RAG complete | Search: {search_latency:.0f}ms | LLM: {llm_latency:.0f}ms")
         
         return RAGResponse(
             query=request.query,
@@ -556,11 +549,61 @@ async def ask_self_query(request: RAGRequest):
 # ROOT AND UTILITY ENDPOINTS
 # ============================================================================
 
+# Voice transcription endpoint
+@app.post("/voice/transcribe", response_model=TranscriptResponse)
+async def transcribe_voice(
+    audio: UploadFile = File(...),
+    language: str = "en"
+):
+    """
+    Transcribe audio to text using ElevenLabs STT.
+    Use the returned transcript with /search or /ask endpoints.
+    
+    Supported formats: mp3, wav, webm, m4a, ogg, flac
+    Supported languages: en, hi, ta, te, bn, mr, gu, kn, ml, pa, etc.
+    """
+    allowed_extensions = {'mp3', 'wav', 'webm', 'm4a', 'ogg', 'flac'}
+    filename = audio.filename or "audio.webm"
+    extension = filename.split('.')[-1].lower()
+    
+    if extension not in allowed_extensions:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported audio format. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    try:
+        audio_data = await audio.read()
+        
+        if len(audio_data) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Empty audio file"
+            )
+        
+        speech_service = get_speech_service()
+        result = await speech_service.transcribe_audio(audio_data, filename, language)
+        
+        print(f"🎤 Transcribed ({language}): '{result['text'][:100]}...'")
+        
+        return TranscriptResponse(transcript=result["text"])
+        
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    except Exception as e:
+        print(f"❌ Transcription error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Transcription failed: {str(e)}"
+        )
+
+# Root endpoint
 @app.get("/")
 async def root():
     """API root"""
     return {
         "message": "PDF RAG API with Hybrid Search & Self-Query",
+        "message": "PDF RAG API",
         "version": "2.0.0",
         "search_methods": ["vector", "sparse", "hybrid"],
         "description": {
@@ -577,7 +620,9 @@ async def root():
             "ask": "/ask",
             "ask_self_query": "/ask/self-query",
             "pdf": "/pdf/{filename}",
-            "api_self_query": "/api/self-query/*"
+            "api_self_query": "/api/self-query/*",
+            "voice_transcribe": "/voice/transcribe",
+            "pdf": "/pdf/{filename}"
         },
         "features": [
             "Hybrid Search (Dense + Sparse + RRF)",
@@ -585,7 +630,9 @@ async def root():
             "Cross-Encoder Reranking",
             "RAG with LLM Generation"
         ]
-    }
+
+        }
+    
 
 @app.get("/pdf/{filename}")
 async def serve_pdf(filename: str):

@@ -44,6 +44,7 @@ lxml>=5.0.0
 # Async Support
 aiofiles>=23.2.0
 
+<<<<<<< HEAD
 # LangChain Full Integration
 langchain>=0.1.0
 langchain-core>=0.1.23
@@ -61,3 +62,6 @@ tqdm>=4.65.0
 
 # Progress Bar
 tqdm>=4.65.0
+=======
+FlagEmbedding
+>>>>>>> 74e011eb5188dd4f762f3e61445ddf615711a395

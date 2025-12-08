@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
 import { useTheme } from "@/lib/ThemeContext";
+import VoiceInput from "@/components/VoiceInput";
 
 type SearchMethod = "vector" | "sparse" | "hybrid";
 
@@ -150,6 +151,15 @@ export default function Search() {
     }
   }
 
+  function handleTranscript(transcript: string) {
+    setQuery(transcript);
+    setMessage(`🎤 Voice input received: "${transcript}"`);
+  }
+
+  function handleVoiceError(error: string) {
+    setMessage(`❌ Voice input error: ${error}`);
+  }
+
   return (
     <main className={`min-h-screen transition-colors duration-300 ${
       isDark ? "bg-neutral-950 text-white" : "bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 text-gray-900"
@@ -272,6 +282,15 @@ export default function Search() {
                 }`}
                 disabled={searching}
               />
+              
+              {/* Voice Input Button */}
+              <VoiceInput
+                onTranscript={handleTranscript}
+                onError={handleVoiceError}
+                disabled={searching}
+                isDark={isDark}
+              />
+              
               <button
                 type="submit"
                 disabled={searching || !query.trim()}
