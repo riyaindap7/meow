@@ -2,12 +2,19 @@ from pymilvus import connections, utility, Collection, DataType
 
 def connect_milvus():
     """Connect to Milvus"""
-    connections.connect("default", host="192.168.65.80", port="19530")
-    print("✅ Connected to Milvus")
+    try:
+        connections.connect("default", host="localhost", port="19530", timeout=10)
+        print("✅ Connected to Milvus")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to connect: {e}")
+        return False
 
 def list_collections():
     """List all collections"""
-    connect_milvus()
+    if not connect_milvus():
+        return
+    
     collections = utility.list_collections()
     
     if not collections:
@@ -18,14 +25,18 @@ def list_collections():
     print("="*80)
     
     for name in collections:
-        collection = Collection(name)
-        print(f"\n📊 Collection: {name}")
-        print(f"   Entities: {collection.num_entities}")
-        print(f"   Description: {collection.description}")
+        try:
+            collection = Collection(name)
+            print(f"\n📊 Collection: {name}")
+            print(f"   Entities: {collection.num_entities}")
+            print(f"   Description: {collection.description}")
+        except Exception as e:
+            print(f"   ⚠ Error loading {name}: {e}")
 
 def show_schema(collection_name):
     """Show collection schema"""
-    connect_milvus()
+    if not connect_milvus():
+        return
     
     if not utility.has_collection(collection_name):
         print(f"❌ Collection '{collection_name}' not found")
@@ -56,7 +67,7 @@ def show_schema(collection_name):
     
     for field in schema.fields:
         print(f"\n  📌 {field.name}")
-        print(f"      Type: {dtype_map.get(field.dtype, field.dtype)}")
+        print(f"      Type: {dtype_map.get(field.dtype, str(field.dtype))}")
         
         if field.dtype == DataType.FLOAT_VECTOR:
             print(f"      Dimension: {field.params.get('dim', 'N/A')}")
@@ -81,17 +92,18 @@ def show_schema(collection_name):
         else:
             print("  No indexes found")
     except Exception as e:
-        print(f"  Error reading indexes: {e}")
+        print(f"  ⚠ Error reading indexes: {e}")
 
 def delete_collection(collection_name):
     """Delete a collection"""
-    connect_milvus()
+    if not connect_milvus():
+        return
     
     if not utility.has_collection(collection_name):
         print(f"❌ Collection '{collection_name}' not found")
         return
     
-    confirm = input(f"⚠️  Are you sure you want to delete '{collection_name}'? (yes/no): ")
+    confirm = input(f"⚠  Are you sure you want to delete '{collection_name}'? (yes/no): ")
     if confirm.lower() != 'yes':
         print("❌ Deletion cancelled")
         return
@@ -101,17 +113,19 @@ def delete_collection(collection_name):
 
 def delete_all_collections():
     """Delete ALL collections"""
-    connect_milvus()
+    if not connect_milvus():
+        return
+    
     collections = utility.list_collections()
     
     if not collections:
         print("❌ No collections to delete")
         return
     
-    print(f"⚠️  Found {len(collections)} collection(s): {collections}")
-    confirm = input("⚠️  Delete ALL collections? This cannot be undone! (yes/no): ")
+    print(f"⚠  Found {len(collections)} collection(s): {collections}")
+    confirm = input("⚠  Delete ALL collections? This cannot be undone! (TYPE 'DELETE ALL' to confirm): ")
     
-    if confirm.lower() != 'yes':
+    if confirm != 'DELETE ALL':
         print("❌ Deletion cancelled")
         return
     
@@ -119,11 +133,12 @@ def delete_all_collections():
         utility.drop_collection(name)
         print(f"✅ Deleted: {name}")
     
-    print(f"✅ All collections deleted")
+    print(f"✅ All {len(collections)} collections deleted")
 
 def collection_stats(collection_name):
     """Show detailed collection statistics"""
-    connect_milvus()
+    if not connect_milvus():
+        return
     
     if not utility.has_collection(collection_name):
         print(f"❌ Collection '{collection_name}' not found")
@@ -139,8 +154,8 @@ def collection_stats(collection_name):
     try:
         collection.load()
         print(f"Status: ✅ Loaded in memory")
-    except:
-        print(f"Status: ⚠️  Not loaded")
+    except Exception as e:
+        print(f"Status: ⚠  Not loaded ({e})")
     
     # Get index info
     print(f"\n📑 Index Information:")
@@ -155,23 +170,67 @@ def collection_stats(collection_name):
         else:
             print("  No indexes built")
     except Exception as e:
-        print(f"  No index info available: {e}")
+        print(f"  ⚠ No index info available: {e}")
+
+def sample_data(collection_name, limit=3):
+    """Show sample data from collection"""
+    if not connect_milvus():
+        return
+    
+    if not utility.has_collection(collection_name):
+        print(f"❌ Collection '{collection_name}' not found")
+        return
+    
+    collection = Collection(collection_name)
+    
+    try:
+        collection.load()
+        
+        # Get schema to dynamically determine available fields
+        schema = collection.schema
+        output_fields = [
+            field.name for field in schema.fields 
+            if field.name != "id" and field.dtype != DataType.FLOAT_VECTOR
+        ]
+        
+        # Query with actual fields
+        results = collection.query(
+            expr="",  # Empty expression gets all records
+            limit=limit,
+            output_fields=output_fields
+        )
+        
+        print(f"\n📄 Sample data from {collection_name} (showing {len(results)} items):")
+        print("="*80)
+        
+        for i, result in enumerate(results, 1):
+            print(f"\n--- Sample {i} ---")
+            for key, value in result.items():
+                # Truncate long strings for readability
+                if isinstance(value, str) and len(value) > 150:
+                    print(f"{key}: {value[:150]}...")
+                else:
+                    print(f"{key}: {value}")
+    
+    except Exception as e:
+        print(f"❌ Error querying data: {e}")
 
 # Interactive Menu
 if __name__ == "__main__":
     while True:
         print("\n" + "="*80)
-        print("🗄️  MILVUS MANAGEMENT MENU")
+        print("🗄  MILVUS MANAGEMENT MENU")
         print("="*80)
         print("1. List all collections")
         print("2. Show collection schema")
         print("3. Show collection statistics")
-        print("4. Delete specific collection")
-        print("5. Delete ALL collections")
-        print("6. Exit")
+        print("4. Show sample data")
+        print("5. Delete specific collection")
+        print("6. Delete ALL collections")
+        print("7. Exit")
         print("="*80)
         
-        choice = input("\nEnter choice (1-6): ").strip()
+        choice = input("\nEnter choice (1-7): ").strip()
         
         if choice == "1":
             list_collections()
@@ -186,12 +245,16 @@ if __name__ == "__main__":
         
         elif choice == "4":
             collection_name = input("Enter collection name: ").strip()
-            delete_collection(collection_name)
+            sample_data(collection_name)
         
         elif choice == "5":
-            delete_all_collections()
+            collection_name = input("Enter collection name: ").strip()
+            delete_collection(collection_name)
         
         elif choice == "6":
+            delete_all_collections()
+        
+        elif choice == "7":
             print("👋 Goodbye!")
             break
         

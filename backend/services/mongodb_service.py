@@ -129,6 +129,17 @@ def _create_indexes():
     sync_logs.create_index([("timestamp", DESCENDING)])
     sync_logs.create_index([("sync_type", ASCENDING)])
     
+    # Users collection indexes
+    users = db.users
+    users.create_index([("email", ASCENDING)], unique=True)
+    users.create_index([("created_at", DESCENDING)])
+    
+    # Sessions collection indexes
+    sessions = db.sessions
+    sessions.create_index([("token", ASCENDING)], unique=True)
+    sessions.create_index([("expires_at", ASCENDING)])
+    sessions.create_index([("user_id", ASCENDING)])
+    
     print("MongoDB indexes created successfully")
 
 
