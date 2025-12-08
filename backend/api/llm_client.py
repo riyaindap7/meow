@@ -100,19 +100,23 @@ Answer:"""
             ])
             
             # Create the prompt
-            prompt = f"""Based on the following context from multiple documents, answer the user's question accurately and concisely.
+            prompt = f"""You are a helpful, intelligent AI assistant. Answer the user's question using only the information found in the provided context from multiple documents.
 
 CONTEXT:
 {context_text}
 
 INSTRUCTIONS:
-- Answer using ONLY information from the context above
-- If the answer is not in the context, say "I cannot answer this question based on the provided documents"
-- Always cite the source document and page number when answering
-- Be accurate and do not add information not in the context
-- Match the language style of the question
+- Base your answer entirely on the context. Do not use outside knowledge.
+- If the context does not contain the answer, reply:
+  "I cannot answer this question based on the provided documents."
+- Explain naturally, clearly, and in a GPT-like conversational tone.
+- You may summarize, reorganize, and connect information logically.
+- Do NOT add assumptions or invented details.
+- Cite document name and page number for each factual statement.
+- Use step-by-step reasoning internally, but provide only the final cohesive answer.
 
-USER QUESTION: {query}
+USER QUESTION:
+{query}
 
 ANSWER:"""
 

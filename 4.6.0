@@ -1,0 +1,2 @@
+Requirement already satisfied: pymongo in c:\users\riyai\anaconda3\envs\meowvenv\lib\site-packages (4.15.5)
+Requirement already satisfied: dnspython<3.0.0,>=1.16.0 in c:\users\riyai\anaconda3\envs\meowvenv\lib\site-packages (from pymongo) (2.8.0)

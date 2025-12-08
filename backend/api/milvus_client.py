@@ -12,7 +12,7 @@ class MilvusClient:
     def __init__(self):
         self.host = os.getenv("MILVUS_HOST", "localhost")
         self.port = os.getenv("MILVUS_PORT", "19530")
-        self.collection_name = os.getenv("MILVUS_COLLECTION", "VictorText")
+        self.collection_name = os.getenv("COLLECTION_NAME", "VictorText2")  # ✅ Changed
         self.embedding_model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
         
         # Dense embeddings - SentenceTransformer (for backward compatibility)
@@ -23,6 +23,14 @@ class MilvusClient:
         # Sparse embeddings - FlagEmbedding (only loaded if hybrid search is used)
         self._sparse_model = None
         
+        # ✅ Pre-load sparse model if hybrid is enabled
+        if os.getenv("ENABLE_HYBRID_SEARCH", "true").lower() == "true":
+            print(f"🚀 Pre-loading sparse model for hybrid search...")
+            try:
+                _ = self.sparse_model  # Trigger lazy load
+            except Exception as e:
+                print(f"⚠️  Could not pre-load sparse model: {e}")
+    
         # Initialize re-ranker (lazy loading)
         self.reranker_model_name = os.getenv("RERANKER_MODEL")
         self._reranker = None
@@ -34,11 +42,26 @@ class MilvusClient:
     def sparse_model(self):
         """Lazy load sparse model only when needed"""
         if self._sparse_model is None:
-            print(f"Loading sparse embedding model: {self.embedding_model_name}")
-            self._sparse_model = BGEM3FlagModel(
-                self.embedding_model_name,
-                use_fp16=False
-            )
+            try:
+                print(f"⏳ Loading sparse embedding model: {self.embedding_model_name}")
+                print(f"   This may take 30-60 seconds on first run (downloading model)...")
+                print(f"   Subsequent queries will be instant (model cached in memory)")
+                
+                self._sparse_model = BGEM3FlagModel(
+                    self.embedding_model_name,
+                    use_fp16=False,
+                    device='cpu'  # Force CPU to avoid GPU issues
+                )
+                
+                print(f"✅ Sparse model loaded successfully")
+                
+            except Exception as e:
+                print(f"❌ Error loading sparse model: {e}")
+                print(f"⚠️  Falling back to dense-only search")
+                import traceback
+                traceback.print_exc()
+                return None  # Return None instead of storing None
+    
         return self._sparse_model
     
     @property
@@ -88,15 +111,49 @@ class MilvusClient:
             return_colbert_vecs=False
         )
         
+        # ✅ Extract and return sparse weights
         sparse_weights = output['lexical_weights'][0]
         return {int(k): float(v) for k, v in sparse_weights.items()}
+   
+    def search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
+        """
+        Search for similar vectors in VictorText2 collection
+        """
+        collection = self.get_collection()
+        
+        # Generate query embedding
+        query_embedding = self.embed_query(query)
+        
+        # Search parameters
+        search_params = {
+            "metric_type": "IP",
+            "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
+        }
+        
+        # Use consistent output fields
+        output_fields = self._get_output_fields()  # ✅ Use the method instead of inline list
+        
+        # Execute search
+        results = collection.search(
+            data=[query_embedding],
+            anns_field="dense_embedding",  # ✅ VictorText2 uses dense_embedding
+            param=search_params,
+            limit=top_k,
+            expr=filter_expr,
+            output_fields=output_fields
+        )
+        
+        return self._format_results(results)
     
     def _get_output_fields(self) -> List[str]:
-        """Common output fields for all searches"""
+        """Common output fields for VictorText2 searches"""
         return [
             "document_name", "document_id", "chunk_id", "global_chunk_id",
             "page_idx", "chunk_index", "section_hierarchy", "heading_context",
-            "text", "char_count", "word_count"
+            "text", "char_count", "word_count",
+            # ✅ Add metadata fields from VictorText2
+            "Category", "document_type", "ministry", "published_date",
+            "source_reference", "version", "language", "semantic_labels"
         ]
     
     def _format_results(self, results, use_distance: bool = False) -> List[Dict]:
@@ -107,17 +164,26 @@ class MilvusClient:
                 score = float(hit.distance) if use_distance else float(hit.score)
                 formatted_results.append({
                     "score": score,
-                    "document_name": hit.entity.get("document_name"),
-                    "document_id": hit.entity.get("document_id"),
-                    "chunk_id": hit.entity.get("chunk_id"),
                     "global_chunk_id": hit.entity.get("global_chunk_id"),
+                    "document_id": hit.entity.get("document_id"),
+                    "document_name": hit.entity.get("document_name"),  # ✅ VictorText2 field
+                    "chunk_id": hit.entity.get("chunk_id"),
                     "page_idx": hit.entity.get("page_idx"),
                     "chunk_index": hit.entity.get("chunk_index"),
                     "section_hierarchy": hit.entity.get("section_hierarchy"),
-                    "heading_context": hit.entity.get("heading_context"),
+                    "heading_context": hit.entity.get("heading_context"),  # ✅ VictorText2 field
                     "text": hit.entity.get("text"),
                     "char_count": hit.entity.get("char_count"),
-                    "word_count": hit.entity.get("word_count")
+                    "word_count": hit.entity.get("word_count"),
+                    # ✅ Add metadata fields
+                    "category": hit.entity.get("Category"),
+                    "document_type": hit.entity.get("document_type"),
+                    "ministry": hit.entity.get("ministry"),
+                    "published_date": hit.entity.get("published_date"),
+                    "source_reference": hit.entity.get("source_reference"),
+                    "version": hit.entity.get("version"),
+                    "language": hit.entity.get("language"),
+                    "semantic_labels": hit.entity.get("semantic_labels")
                 })
         return formatted_results
     
@@ -140,7 +206,7 @@ class MilvusClient:
             return self._vector_search(query, top_k, filter_expr)
     
     def _vector_search(self, query: str, top_k: int = 5, filter_expr: str = None) -> List[Dict]:
-        """Dense vector search using HNSW (original method)"""
+        """Dense vector search using HNSW"""
         collection = self.get_collection()
         dense_embedding = self.embed_query_dense(query)
         
@@ -149,8 +215,8 @@ class MilvusClient:
             "params": {"ef": int(os.getenv("SEARCH_EF", 64))}
         }
         
-        # Use "embedding" field for backward compatibility with VictorText
-        anns_field = "embedding" if self._has_field("embedding") else "dense_embedding"
+        # VictorText2 uses "dense_embedding"
+        anns_field = "dense_embedding" if self._has_field("dense_embedding") else "embedding"
         
         results = collection.search(
             data=[dense_embedding],
@@ -400,28 +466,31 @@ class MilvusClient:
         return self.search(query, top_k, filter_expr, method=method)
    
     def get_chunk_by_id(self, chunk_id: str) -> Dict:
-        """Retrieve a specific chunk by chunk_id"""
+        """Retrieve a specific chunk by global_chunk_id"""
         collection = self.get_collection()
        
         results = collection.query(
-            expr=f'chunk_id == "{chunk_id}"',
-            output_fields=self._get_output_fields()
+            expr=f'global_chunk_id == "{chunk_id}"',
+            output_fields=[
+                "global_chunk_id", "document_id", "source_file", "page_idx",
+                "chunk_index", "section_hierarchy", "text", "char_count", "word_count"
+            ]
         )
        
         if results:
             return results[0]
         return None
    
-    def get_document_chunks(self, document_name: str, limit: int = 100) -> List[Dict]:
+    def get_document_chunks(self, document_id: str, limit: int = 100) -> List[Dict]:
         """Get all chunks from a specific document"""
         collection = self.get_collection()
        
         results = collection.query(
-            expr=f'document_name == "{document_name}"',
+            expr=f'document_id == "{document_id}"',
             limit=limit,
             output_fields=[
-                "document_name", "document_id", "chunk_id", "page_idx",
-                "chunk_index", "heading_context", "text"
+                "global_chunk_id", "document_id", "source_file", "page_idx",
+                "chunk_index", "section_hierarchy", "text"
             ]
         )
        
@@ -434,10 +503,11 @@ class MilvusClient:
         results = collection.query(
             expr="chunk_index >= 0",
             limit=10000,
-            output_fields=["document_name"]
+            output_fields=["document_id"]
         )
        
-        documents = list(set(r["document_name"] for r in results))
+        # Extract unique document IDs
+        documents = list(set(r["document_id"] for r in results if r.get("document_id")))
         return sorted(documents)
    
     def get_collection_stats(self) -> Dict:
@@ -449,7 +519,10 @@ class MilvusClient:
             "total_entities": collection.num_entities,
             "schema": {
                 "embedding_dim": 1024,
-                "fields": self._get_output_fields()
+                "fields": [
+                    "global_chunk_id", "document_id", "source_file", "page_idx",
+                    "chunk_index", "section_hierarchy", "text", "char_count", "word_count"
+                ]
             }
         }
    

@@ -28,6 +28,7 @@ async def verify_auth_token(request: Request, auth_service: AuthService = Depend
             detail="Invalid authorization header format"
         )
     
-    # Verify token
+    # Verify token and get user data
     user_data = auth_service.verify_token(token)
+    print(f"🔐 Authenticated user: {user_data['user_id']} ({user_data['email']})")
     return user_data

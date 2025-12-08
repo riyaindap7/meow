@@ -32,7 +32,7 @@ class QueryDecomposition(BaseModel):
 
 class SelfQueryConfig(BaseModel):
     """Configuration for self-query retriever"""
-    collection_name: str = "VictorText"
+    collection_name: str = "VictorText2"  # ✅ Update default
     top_k: int = 5
     rerank: bool = True
     rerank_top_n: Optional[int] = None
