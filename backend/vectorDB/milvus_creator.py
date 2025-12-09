@@ -278,7 +278,7 @@ import time
 from tqdm import tqdm
 from scipy import sparse
 
-MILVUS_HOST = "localhost"
+MILVUS_HOST = "192.168.65.160"
 MILVUS_PORT = "19530"
 
 # Updated paths - flat file structure

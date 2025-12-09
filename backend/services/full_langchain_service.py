@@ -256,24 +256,46 @@ class TrueLangChainRAG:
                 print("🔧 Creating PromptTemplate...")
                 self.prompt_template = PromptTemplate(
                     input_variables=["chat_history", "context", "input"],
-                    template="""You are an intelligent assistant that answers questions based on provided documents and conversation history.
+                    template="""You are VICTOR, an intelligent AI assistant for Indian education policy documents.
 
-Instructions:
-- Answer ONLY using information from the provided context and conversation history
-- If information is not available, say "I cannot answer this based on the provided documents"
-- Always cite source documents and page numbers when referencing them
-- Be aware of the conversation history and refer to previous points when relevant
-- When user asks "elaborate more" or similar, use the conversation history to understand what to elaborate on
-- Be accurate, concise, and maintain conversation continuity
+YOUR APPROACH:
+- Think step-by-step and reason logically
+- Use a natural, conversational tone (like ChatGPT)
+- Stay completely truthful to provided documents
+- Connect information intelligently across sources
 
+YOUR RULES:
+- Answer ONLY using information from provided documents and conversation history
+- If documents don't contain the answer: "I cannot answer this based on the provided documents"
+- Always cite sources: [Document: <name>, Page: <number>]
+- Use conversation history to understand context and pronouns ("it", "this", "that")
+- Think through the problem step-by-step
+- Never invent or assume information not in documents
+
+YOUR RESPONSE STYLE:
+- Clear, concise, comprehensive
+- Natural conversational flow
+- Logical reasoning when needed
+- Helpful and approachable
+
+=== CONVERSATION HISTORY ===
 {chat_history}
 
-Document Context:
+=== RETRIEVED DOCUMENTS ===
 {context}
 
-Current Question: {input}
+=== THINKING PROCESS ===
+1. Understand the current question and conversation context
+2. Review all relevant documents
+3. Think step-by-step about the answer
+4. Connect information logically
+5. Respond conversationally with citations
 
-Answer:"""
+=== CURRENT QUESTION ===
+{input}
+
+=== YOUR ANSWER ===
+(Think it through, then respond naturally with source citations):"""
                 )
                 
                 print("🔧 Creating LLM wrapper...")
@@ -490,6 +512,58 @@ class FullLangChainRAG:
         
         print("✅ Full LangChain RAG with TRUE Memory initialized successfully")
     
+    def create_new_conversation(self, title: str, user_id: str, metadata: Dict = None) -> str:
+        """Create a new conversation in MongoDB"""
+        try:
+            print(f"🆕 Creating new conversation: '{title}' for user {user_id}")
+            
+            if self.conversations_collection is None:
+                print("⚠️ MongoDB not available, using fallback")
+                import uuid
+                return str(uuid.uuid4())
+            
+            # Use ConversationService for creating conversations
+            from services.conversation_service import get_conversation_service
+            conv_service = get_conversation_service()
+            result = conv_service.create_conversation(
+                user_id=user_id,
+                title=title,
+                metadata=metadata or {}
+            )
+            
+            conversation_id = result.get("conversation_id")
+            print(f"✅ Conversation created: {conversation_id}")
+            return conversation_id
+            
+        except Exception as e:
+            print(f"❌ Error creating conversation: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def get_conversations(self, user_id: str) -> List[Dict]:
+        """Get all conversations for a user"""
+        try:
+            print(f"📋 Getting conversations for user: {user_id}")
+            
+            if self.conversations_collection is None:
+                print("⚠️ MongoDB not available")
+                return []
+            
+            # Use ConversationService for getting conversations
+            from services.conversation_service import get_conversation_service
+            conv_service = get_conversation_service()
+            conversations = conv_service.get_user_conversations(user_id)
+            
+            print(f"✅ Found {len(conversations)} conversations")
+            return conversations
+            
+        except Exception as e:
+            print(f"❌ Error getting conversations: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
     def _update_conversation_context(self, conversation_id: str, user_id: str, query: str, answer: str, contexts: List[Dict[str, Any]]):
         """
         Extract and update conversation context using LLM analysis
@@ -584,260 +658,337 @@ Return only valid JSON, no extra text:"""
         except Exception as e:
             print(f"❌ Error updating conversation context: {e}")
     
-    def ask(self, query: str, user_id: str, conversation_id: str = None, temperature: float = None, top_k: int = None, user: dict = None, dense_weight: float = 0.6, sparse_weight: float = 0.4, method: str = "hybrid"):
-        """
-        Ask a question using TRUE LangChain pipeline with role-based parameters
-        - Memory automatically loads from MongoDB
-        - Chain automatically injects history into prompt
-        - Memory automatically saves after response
-        - Applies role-based RAG parameters
-        - Supports hybrid search with dense/sparse weights
-        """
+    def _enhance_query_with_context(self, query: str, context: dict) -> str:
+        """Enhance vague queries with conversation context"""
+        if not context:
+            return query
         
-        # Apply role-based parameters if user is provided
-        if user:
-            from .role_config import build_chain_params
-            user_role = user.get("role", "user")
-            role_params = build_chain_params(user)
-            print(f"📊 ROLE: {user_role} | PARAMS: temp={role_params.get('temperature')}, docs={role_params.get('top_k')}")
+        topics = context.get("topics", [])[:3]
+        entities = context.get("main_entities", [])[:3]
+        
+        # Check if query uses vague terms or pronouns
+        vague_patterns = ["it", "this", "that", "these", "those", "tell me", "what about", "explain", "elaborate"]
+        query_lower = query.lower()
+        is_vague = any(pattern in query_lower for pattern in vague_patterns)
+        
+        if is_vague and (topics or entities):
+            context_terms = topics[:2] if topics else entities[:2]
+            enhanced = f"{query} (in context of {', '.join(context_terms)})"
+            print(f"🔍 Enhanced query: '{query}' → '{enhanced}'")
+            return enhanced
+        
+        return query
+    
+    def _retrieve_documents(self, query: str, top_k: int, dense_weight: float, 
+                           sparse_weight: float, method: str, 
+                           conversation_context: dict = None,
+                           filter_expr: str = None):  # Add filter_expr parameter
+        """Retrieve documents with context-aware reranking and metadata filters"""
+        
+        # Get more results for reranking
+        results = self.milvus_client.search(
+            query=query,
+            top_k=top_k * 2,
+            method=method,
+            filter_expr=filter_expr  # Pass filters to Milvus search
+        )
+        
+        # Apply context-based reranking if context exists
+        if conversation_context and results:
+            results = self._rerank_with_context(results, conversation_context)
+        
+        return results[:top_k]
+    
+    def _rerank_with_context(self, results: list, context: dict) -> list:
+        """Rerank results based on conversation context"""
+        topics = set(t.lower() for t in context.get("topics", []))
+        entities = set(e.lower() for e in context.get("main_entities", []))
+        
+        for result in results:
+            text = result.get("text", "").lower()
+            original_score = result.get("score", 0)
+            boost = 0.0
             
-            # Use role-based parameters with override capability
-            if temperature is None:
-                temperature = role_params.get('temperature', 0.1)
-            if top_k is None:
-                top_k = role_params.get('top_k', 5)
-            if dense_weight is None:
-                dense_weight = role_params.get('dense_weight', 0.6)
-            if sparse_weight is None:
-                sparse_weight = role_params.get('sparse_weight', 0.4)
-            if method == "hybrid":
-                method = role_params.get('method', 'hybrid')
-        else:
-            # Default fallback values
-            if temperature is None:
-                temperature = 0.1
-            if top_k is None:
-                top_k = 5
-            if dense_weight is None:
-                dense_weight = 0.6
-            if sparse_weight is None:
-                sparse_weight = 0.4
-        
-        print(f"🚀 GENERATING RESPONSE with ROLE: {user.get('role', 'user') if user else 'unknown'}")
-        
-        # Use provided parameters or fallback to role config, then to defaults
-        final_temperature = temperature if temperature is not None else role_config.get("temperature", 0.2)
-        final_top_k = top_k if top_k is not None else role_config.get("top_k", 10)
-        final_dense_weight = dense_weight if dense_weight is not None else role_config.get("dense_weight", 0.7)
-        final_sparse_weight = sparse_weight if sparse_weight is not None else role_config.get("sparse_weight", 0.3)
-        
-        # Ensure minimum 10 documents
-        if final_top_k < 10:
-            final_top_k = 10
-        
-        print(f"📊 Final params: temperature={final_temperature}, top_k={final_top_k}, dense_weight={final_dense_weight}, sparse_weight={final_sparse_weight}, method={method}")
-        
-        try:
-            # Generate conversation_id if not provided
-            if not conversation_id:
-                import uuid
-                conversation_id = str(uuid.uuid4())
+            # Boost for topic matches
+            for topic in topics:
+                if topic in text:
+                    boost += 0.15
             
-            # Create TRUE LangChain Memory (BaseChatMemory)
-            if conversation_id and user_id and self.conversations_collection is not None:
-                memory = MongoConversationMemory(
-                    self.conversations_collection,
-                    conversation_id,
-                    user_id
-                )
-            else:
-                # No-op memory for sessions without persistence
-                memory = type('obj', (object,), {
-                    'memory_variables': ["chat_history"],
-                    'load_memory_variables': lambda self, inputs: {"chat_history": []},
-                    'save_context': lambda self, inputs, outputs: None,
-                    'clear': lambda self: None
-                })()
+            # Boost for entity matches
+            for entity in entities:
+                if entity in text:
+                    boost += 0.10
             
-            # Retrieve documents using Milvus with role-based parameters
-            try:
-                if self.milvus_client:
-                    print(f"🔍 Retrieving {top_k} documents using {method} search")
-                    contexts = self.milvus_client.search(
-                        query=query,
-                        top_k=top_k,
-                        method=method
-                    )
-                    print(f"📚 Retrieved {len(contexts)} documents")
-                else:
-                    contexts = []
-            except Exception as e:
-                print(f"❌ Document retrieval error: {str(e)}")
-                contexts = []
-            
-            # Format contexts for LLM
-            if contexts:
-                context_text = "\n\n".join([
-                    f"[Source {i+1}] {ctx.get('document_name', 'Unknown')} (Page {ctx.get('page_idx', 'N/A')}):\n{ctx.get('text', '')}"
-                    for i, ctx in enumerate(contexts[:5])
-                ])
-            else:
-                context_text = "No relevant documents found."
-            
-            # Create enhanced prompt
-            prompt = f"""You are VICTOR, a helpful, intelligent AI assistant specializing in government documents and policy materials. Answer the user's question using the information found in the provided context documents.
+            result["original_score"] = original_score
+            result["context_boost"] = boost
+            result["score"] = original_score + boost
+        
+        # Re-sort by boosted score
+        results.sort(key=lambda x: x["score"], reverse=True)
+        
+        boosted_count = sum(1 for r in results if r.get("context_boost", 0) > 0)
+        if boosted_count > 0:
+            print(f"🎯 Context reranking: {boosted_count}/{len(results)} documents boosted")
+        
+        return results
+    
+    def _generate_answer(self, query: str, documents: list, temperature: float,
+                        conversation_history: list, conversation_context: dict = None):
+        """Generate answer with context-aware system prompt"""
+        
+        # Build system prompt with conversation context and temporal awareness
+        system_prompt = """You are VICTOR, an intelligent AI assistant specializing in Indian education policies and government documents.
 
-CONTEXT:
-{context_text}
+Your core capabilities:
+- Answer questions using ONLY information from the provided documents
+- Apply TEMPORAL ANALYSIS - consider dates, timelines, and chronological context in documents
+- Use LOGICAL REASONING - think step-by-step, analyze cause-effect relationships
+- Maintain a natural, conversational, and helpful tone (like ChatGPT)
+- Be truthful - if documents don't contain the answer, clearly state: "I cannot answer this based on the provided documents"
 
-INSTRUCTIONS:
-- Use the context as your primary reference while applying deep analytical reasoning
-- You may reason and make logical connections between information from different documents
-- When reasoning between documents, clearly indicate this is your logical inference based on the provided information
-- If after reasoning through the documents you still cannot answer, reply: "I cannot answer this question based on the provided documents."
-- Always cite document name and page number for each factual statement
-- Explain naturally, clearly, and in a conversational tone
-- Structure your response clearly with proper formatting
-- Connect information logically and provide meaningful insights
-- Use step-by-step reasoning internally, but deliver a cohesive final answer
+Your analytical framework:
+1. TEMPORAL CONTEXT
+   - Identify and note publication dates, effective dates, amendment dates in documents
+   - Recognize time-based patterns (before/after policy changes, evolution over time)
+   - Compare information across different time periods
+   - Highlight what changed when, and what remained constant
+   - Use phrases like "As of [date]...", "Prior to [year]...", "Following [event]..."
 
-USER QUESTION:
+2. LOGICAL ANALYSIS
+   - Think through problems step-by-step
+   - Identify cause-and-effect relationships
+   - Connect related concepts across documents logically
+   - Analyze implications and consequences
+   - Recognize contradictions or complementary information
+   - Build coherent arguments from evidence
+
+3. INFORMATION SYNTHESIS
+   - Cross-reference information from multiple documents
+   - Identify patterns and relationships
+   - Distinguish between facts, policies, and recommendations
+   - Provide context for technical terms and acronyms
+   - Connect specific details to broader policy goals
+
+Your response requirements:
+- Use conversation history to understand context, pronouns ("it", "this", "that"), and follow-up questions
+- Provide specific citations: [Document: <name>, Page: <number>, Date: <if available>]
+- Reorganize information logically for clarity
+- Never invent or assume information not present in documents
+- When temporal information exists, ALWAYS include it in your analysis
+
+Your response style:
+- Clear, concise, and comprehensive
+- Natural conversational flow with temporal precision
+- Logical reasoning made explicit when needed
+- Decision support when relevant (pros/cons, implications, considerations)
+- Analytical depth - examine information from multiple perspectives
+- Cite sources with temporal context: [Document: <name>, Page: <number>, Published: <date>]"""
+
+        if conversation_context:
+            topics = conversation_context.get("topics", [])
+            entities = conversation_context.get("main_entities", [])
+            user_goal = conversation_context.get("user_goal", "")
+            summary = conversation_context.get("summary", "")
+            
+            context_parts = []
+            if summary:
+                context_parts.append(f"📝 Previous discussion: {summary}")
+            if user_goal:
+                context_parts.append(f"🎯 User's goal: {user_goal}")
+            if topics:
+                context_parts.append(f"📚 Current topics: {', '.join(topics[:5])}")
+            if entities:
+                context_parts.append(f"🔑 Key entities: {', '.join(entities[:5])}")
+            
+            if context_parts:
+                system_prompt += "\n\n=== CONVERSATION CONTEXT ===\n"
+                system_prompt += "\n".join(context_parts)
+                system_prompt += "\n" + "="*50
+                print(f"💬 Added conversation context to prompt")
+        
+        # Build conversation history
+        history_text = ""
+        if conversation_history:
+            history_text = "\n\n=== RECENT CONVERSATION ===\n"
+            for msg in conversation_history[-6:]:
+                role = msg.get("role", "").upper()
+                content = msg.get("content", "")
+                if len(content) > 150:
+                    content = content[:150] + "..."
+                history_text += f"{role}: {content}\n"
+            history_text += "="*50
+        
+        # Format retrieved documents with emphasis on temporal data
+        doc_context = "\n\n".join([
+            f"--- Source {i+1} (Relevance: {doc.get('score', 0):.3f}) ---\n"
+            f"Document: {doc.get('document_name', 'Unknown')}\n"
+            f"Page: {doc.get('page_idx', 'N/A')}\n"
+            f"Published Date: {doc.get('published_date', 'Date not specified')}\n"
+            f"Section: {doc.get('section_hierarchy', 'N/A')}\n"
+            f"Content: {doc.get('text', '')[:1200]}"
+            for i, doc in enumerate(documents[:7])
+        ])
+        
+        # Build final prompt with clear analytical instructions
+        full_prompt = f"""{system_prompt}
+{history_text}
+
+=== RETRIEVED DOCUMENTS ===
+{doc_context}
+
+=== YOUR ANALYTICAL APPROACH ===
+
+STEP 1: TEMPORAL ANALYSIS
+- Scan all documents for dates, time periods, and temporal markers
+- Note: publication dates, effective dates, amendment dates
+- Identify: what changed over time? what's current vs. historical?
+- Consider: chronological order of policies, evolution of concepts
+
+STEP 2: LOGICAL ANALYSIS
+- Break down the question into sub-components
+- Identify what type of answer is needed (definition, comparison, timeline, impact, etc.)
+- Map relevant information from documents to question components
+- Identify cause-effect relationships, dependencies, implications
+- Cross-reference information across sources for completeness
+
+STEP 3: SYNTHESIS & VERIFICATION
+- Combine information logically and chronologically
+- Check for contradictions or gaps in evidence
+- Ensure temporal accuracy (don't mix historical and current policies)
+- Verify all claims are grounded in documents
+- Prepare citations with temporal context where available
+
+STEP 4: RESPONSE CONSTRUCTION
+- Start with direct answer to the question
+- Provide temporal context (when did this happen/change?)
+- Explain the logic/reasoning behind policies or changes
+- Include relevant dates and timeline information
+- Add decision support if applicable (implications, considerations)
+- Cite all sources with: [Document: <name>, Page: <number>, Date: <if known>]
+
+=== CRITICAL RULES ===
+✓ Use temporal context from documents (dates, periods, before/after)
+✓ Think step-by-step and show logical reasoning
+✓ Analyze from multiple perspectives before answering
+✓ Use conversation history to understand pronouns and context
+✓ Cite every factual claim with source
+✗ Never invent dates, information, or details
+✗ Don't mix information from different time periods without noting it
+✗ Don't assume causation without evidence
+
+=== CURRENT QUESTION ===
 {query}
 
-ANSWER:"""
-            
-            # Generate answer using LLM with role-based temperature
-            answer = self.llm.generate(prompt, temperature=temperature)
-            
-            # Save to memory
-            try:
-                memory.save_context(
-                    inputs={"input": query},
-                    outputs={"output": answer}
-                )
-            except Exception as e:
-                print(f"❌ Memory save error: {str(e)}")
-            
-            # Format sources
-            sources = []
-            for ctx in contexts:
-                sources.append({
-                    "text": ctx.get('text', '')[:200] + "..." if len(ctx.get('text', '')) > 200 else ctx.get('text', ''),
-                    "source": ctx.get("document_name", ""),
-                    "page": ctx.get("page_idx", 0),
-                    "score": ctx.get("score", 0.0),
-                    "document_id": ctx.get("document_id"),
-                    "chunk_id": ctx.get("chunk_id"),
-                    "global_chunk_id": ctx.get("global_chunk_id"),
-                    "chunk_index": ctx.get("chunk_index"),
-                    "section_hierarchy": ctx.get("section_hierarchy"),
-                    "heading_context": ctx.get("heading_context"),
-                    "char_count": ctx.get("char_count"),
-                    "word_count": ctx.get("word_count")
-                })
-            
-            print("✅ TRUE LangChain RAG completed")
-            
-            # Extract and update conversation context
-            if conversation_id and user_id:
-                self._update_conversation_context(conversation_id, user_id, query, answer, contexts)
-            
-            return {
-                "answer": answer,
-                "sources": sources,
-                "conversation_id": conversation_id,
-                "model_used": self.model_name
-            }
-            
-        except Exception as e:
-            print(f"❌ Error in TRUE LangChain RAG: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            raise
-    
-    def create_new_conversation(self, title: str, user_id: str, metadata: Dict = None) -> str:
-        """Create a new conversation"""
-        try:
-            if self.mongodb_service:
-                # Use ConversationService for creating conversations
-                from services.conversation_service import get_conversation_service
-                conv_service = get_conversation_service()
-                result = conv_service.create_conversation(
-                    user_id=user_id,
-                    title=title,
-                    metadata=metadata or {}
-                )
-                return result.get("conversation_id")
-            else:
-                # Generate conversation ID for in-memory storage
-                import uuid
-                conversation_id = str(uuid.uuid4())
-                return conversation_id
-        except Exception as e:
-            print(f"❌ Error creating conversation: {str(e)}")
-            raise
-    
-    def get_conversations(self, user_id: str) -> List[Dict]:
-        """Get all conversations for a user"""
-        try:
-            if self.mongodb_service:
-                # Use ConversationService for getting conversations
-                from services.conversation_service import get_conversation_service
-                conv_service = get_conversation_service()
-                conversations = conv_service.get_user_conversations(user_id)
-                
-                # Format the conversations to ensure datetime fields are strings
-                formatted_conversations = []
-                for conv in conversations:
-                    try:
-                        # Convert created_at to string if it's datetime
-                        created_at = conv.get("created_at")
-                        if created_at:
-                            if hasattr(created_at, 'isoformat'):
-                                created_at = created_at.isoformat()
-                            elif not isinstance(created_at, str):
-                                created_at = str(created_at)
-                        else:
-                            created_at = "2023-01-01T00:00:00"
-                        
-                        # Convert updated_at to string if it's datetime
-                        updated_at = conv.get("updated_at", created_at)
-                        if updated_at:
-                            if hasattr(updated_at, 'isoformat'):
-                                updated_at = updated_at.isoformat()
-                            elif not isinstance(updated_at, str):
-                                updated_at = str(updated_at)
-                        else:
-                            updated_at = created_at
-                        
-                        formatted_conversations.append({
-                            "conversation_id": conv.get("conversation_id", ""),
-                            "user_id": conv.get("user_id", user_id),
-                            "title": conv.get("title", "Untitled"),
-                            "created_at": created_at,
-                            "updated_at": updated_at,
-                            "messages": conv.get("messages", [])
-                        })
-                    except Exception as e:
-                        print(f"⚠️ Error formatting conversation: {str(e)}")
-                        continue
-                
-                return formatted_conversations
-            else:
-                # Return empty list for in-memory storage
-                return []
-        except Exception as e:
-            print(f"❌ Error getting conversations: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return []
+=== YOUR ANSWER ===
+(Apply temporal analysis → logical reasoning → synthesis, then respond clearly with citations and temporal context):"""
 
-# Global instance
-_full_langchain_rag = None
+        print(f"📤 Calling LLM with temporal & logical analysis prompt")
+        print(f"   Prompt length: {len(full_prompt)} chars")
+        print(f"   Documents with dates: {sum(1 for d in documents if d.get('published_date'))}")
+        
+        # Generate answer
+        answer = self.llm.generate(full_prompt, temperature=temperature)
+        
+        print(f"📥 LLM response: {len(answer)} chars")
+        print(f"📥 LLM response preview: {answer[:200]}...")
+        
+        return answer
+
+    def ask(self, query: str, user_id: str = None, conversation_id: str = None,
+            temperature: float = 0.1, top_k: int = 5, user: dict = None,
+            dense_weight: float = 0.6, sparse_weight: float = 0.4, 
+            method: str = "hybrid",
+            conversation_context: dict = None,
+            filter_expr: str = None):  # Add filter_expr parameter
+        """Execute full RAG pipeline with conversation context awareness and filters"""
+        
+        print(f"\n🔵 LANGCHAIN RAG EXECUTION")
+        print(f"   Query: {query}")
+        print(f"   Conversation ID: {conversation_id}")
+        print(f"   Context received: {bool(conversation_context)}")
+        print(f"   Filter expression: {filter_expr or 'None'}")
+        
+        if conversation_context:
+            print(f"   📌 Context Topics: {conversation_context.get('topics', [])[:3]}")
+            print(f"   📌 Context Entities: {conversation_context.get('main_entities', [])[:3]}")
+            print(f"   📌 User Goal: {conversation_context.get('user_goal', '')[:100]}")
+        
+        # STEP 1: Query enhancement with context
+        enhanced_query = self._enhance_query_with_context(query, conversation_context)
+        
+        # STEP 2: Document retrieval with context reranking and filters
+        print(f"\n🔍 RETRIEVING DOCUMENTS (method: {method}, top_k: {top_k})")
+        documents = self._retrieve_documents(
+            enhanced_query, 
+            top_k, 
+            dense_weight, 
+            sparse_weight, 
+            method,
+            conversation_context,
+            filter_expr  # Pass filter expression
+        )
+        print(f"   Retrieved {len(documents)} documents")
+        if documents:
+            print(f"   Top document score: {documents[0].get('score', 0):.4f}")
+            if filter_expr:
+                print(f"   ✅ Filters applied successfully")
+        
+        # STEP 3: Get conversation history
+        conversation_history = []
+        if conversation_id:
+            from services.mongodb_service import mongodb_service
+            conversation_history = mongodb_service.get_last_messages(conversation_id, limit=6)
+            print(f"   Loaded {len(conversation_history)} history messages")
+        
+        # STEP 4: Generate answer with context in system prompt
+        print(f"\n🤖 GENERATING ANSWER")
+        answer = self._generate_answer(
+            query, 
+            documents, 
+            temperature, 
+            conversation_history,
+            conversation_context
+        )
+        
+        print(f"   Answer length: {len(answer)} chars")
+        print(f"   Answer preview: {answer[:150]}...")
+        
+        # STEP 5: Save messages to MongoDB
+        if conversation_id:
+            from services.mongodb_service import mongodb_service
+            mongodb_service.add_message(conversation_id, user_id, "user", query)
+            mongodb_service.add_message(
+                conversation_id, 
+                user_id, 
+                "assistant", 
+                answer,
+                metadata={"sources": [d.get("document_name") for d in documents[:5]]}
+            )
+            print(f"   💾 Messages saved to MongoDB")
+            
+            # STEP 6: Update conversation context asynchronously
+            self._update_conversation_context(
+                conversation_id, 
+                user_id, 
+                query, 
+                answer, 
+                documents
+            )
+        
+        return {
+            "answer": answer,
+            "sources": documents,
+            "conversation_id": conversation_id,
+            "model_used": self.model_name
+        }
+
+# ========== SINGLETON INSTANCE ==========
+_full_langchain_rag_instance = None
 
 def get_full_langchain_rag() -> FullLangChainRAG:
-    """Get or create FullLangChainRAG singleton"""
-    global _full_langchain_rag
-    if _full_langchain_rag is None:
-        _full_langchain_rag = FullLangChainRAG()
-    return _full_langchain_rag
+    """Get or create the singleton FullLangChainRAG instance"""
+    global _full_langchain_rag_instance
+    if _full_langchain_rag_instance is None:
+        print("🔧 Creating new FullLangChainRAG instance...")
+        _full_langchain_rag_instance = FullLangChainRAG()
+    return _full_langchain_rag_instance

@@ -164,13 +164,49 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
     try:
         print(f"📤 QUERY: {request.query} | USER: {user.get('email', 'unknown')} | ROLE: {user.get('role', 'user')}")
         
+        # Build filter expression from request parameters
+        filters = []
+        if request.category:
+            filters.append(f'Category == "{request.category}"')
+            print(f"   🏷️ Filter: Category = {request.category}")
+        if request.language:
+            filters.append(f'language == "{request.language}"')
+            print(f"   🌐 Filter: Language = {request.language}")
+        if request.document_type:
+            filters.append(f'document_type == "{request.document_type}"')
+            print(f"   📄 Filter: Document Type = {request.document_type}")
+        if request.document_name:
+            # Use LIKE operator for partial match
+            filters.append(f'document_name like "%{request.document_name}%"')
+            print(f"   📝 Filter: Document Name contains '{request.document_name}'")
+        if request.date_from and request.date_to:
+            filters.append(f'published_date >= "{request.date_from}" && published_date <= "{request.date_to}"')
+            print(f"   📅 Filter: Date range {request.date_from} to {request.date_to}")
+        
+        filter_expr = ' && '.join(filters) if filters else None
+        
+        if filter_expr:
+            print(f"   🔍 Combined filter expression: {filter_expr}")
+        
+        # Get conversation context from MongoDB if conversation_id exists
+        conversation_context = None
+        if request.conversation_id:
+            from services.mongodb_service import get_conversation
+            conv = get_conversation(request.conversation_id, user["user_id"])
+            if conv:
+                conversation_context = conv.get("context", {})
+                print(f"📌 LOADED CONVERSATION CONTEXT:")
+                print(f"   Topics: {conversation_context.get('topics', [])}")
+                print(f"   Entities: {conversation_context.get('main_entities', [])}")
+                print(f"   User Goal: {conversation_context.get('user_goal', '')}")
+        
         # Get LangChain RAG service
         from backend.services.full_langchain_service import get_full_langchain_rag
         langchain_rag = get_full_langchain_rag()
         
         total_start = time.time()
         
-        # Execute RAG with all parameters
+        # Execute RAG with conversation context and filters
         result = langchain_rag.ask(
             query=request.query,
             user_id=user["user_id"],
@@ -180,10 +216,22 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
             user=user,
             dense_weight=request.dense_weight,
             sparse_weight=request.sparse_weight,
-            method=request.method
+            method=request.method,
+            conversation_context=conversation_context,
+            filter_expr=filter_expr  # Pass filter expression
         )
         
         total_latency = (time.time() - total_start) * 1000
+        
+        # Update conversation context after response
+        if request.conversation_id and result.get("answer"):
+            await _update_conversation_context(
+                request.conversation_id,
+                user["user_id"],
+                request.query,
+                result["answer"],
+                conversation_context
+            )
         
         # Format sources for response
         formatted_sources = []
@@ -203,7 +251,7 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
                 word_count=source.get("word_count")
             ))
         
-        print(f"✅ RAG complete | Total: {total_latency:.0f}ms")
+        print(f"✅ RAG complete | Total: {total_latency:.0f}ms | Sources: {len(formatted_sources)}")
         
         return RAGResponse(
             query=request.query,

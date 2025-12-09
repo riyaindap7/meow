@@ -45,12 +45,19 @@ class SearchResponse(BaseModel):
 class RAGRequest(BaseModel):
     query: str
     conversation_id: Optional[str] = None
-    temperature: Optional[float] = None
-    top_k: Optional[int] = None
+    top_k: Optional[int] = 5
+    temperature: Optional[float] = 0.1
+    dense_weight: Optional[float] = 0.6
+    sparse_weight: Optional[float] = 0.4
     method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
-    dense_weight: Optional[float] = 0.7
-    sparse_weight: Optional[float] = 0.3
-    filter_expr: Optional[str] = None
+    
+    # Filter parameters
+    category: Optional[str] = None
+    language: Optional[str] = None
+    document_type: Optional[str] = None
+    document_name: Optional[str] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
 
 class RAGResponse(BaseModel):
     query: str
