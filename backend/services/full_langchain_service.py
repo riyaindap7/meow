@@ -719,8 +719,6 @@ Return only valid JSON, no extra text:"""
             
             print(f"   📊 Retrieved: {len(results)} results")
             
-            # ✅ REMOVED: No keyword filtering - metadata handles document_id
-            
             # Deduplicate
             unique_results = self._deduplicate_results(results)
             print(f"   📊 After deduplication: {len(unique_results)}")
@@ -736,12 +734,15 @@ Return only valid JSON, no extra text:"""
             reranked_docs = reranker.rerank(
                 query=query,
                 documents=unique_results,
-                top_k=15,  # Changed from 3 to 15
+                top_k=15,  # Always get 15 documents
                 min_k=3
             )
             
-            # Take top-k (already done by reranker, but ensure consistency)
-            final_results = reranked_docs[:top_k]
+            # ❌ REMOVE THIS LINE - Don't slice again!
+            # final_results = reranked_docs[:top_k]
+            
+            # ✅ Use all reranked documents (already limited to 15 by reranker)
+            final_results = reranked_docs
             
             print(f"   ✅ Final: {len(final_results)} documents")
             if final_results:
@@ -825,48 +826,37 @@ Return only valid JSON, no extra text:"""
 
 Your core capabilities:
 - Answer questions using ONLY information from the provided documents
-- Apply TEMPORAL ANALYSIS - consider dates, timelines, and chronological context in documents
-- Use LOGICAL REASONING - think step-by-step, analyze cause-effect relationships
-- Maintain a natural, conversational, and helpful tone (like ChatGPT)
-- Be truthful - if documents don't contain the answer, clearly state: "I cannot answer this based on the provided documents"
+- Analyze temporal context (dates, timelines, chronological changes) when relevant
+- Apply logical reasoning and step-by-step thinking
+- Maintain a natural, conversational tone (like ChatGPT)
+- Be completely truthful - if documents don't contain the answer, clearly state: "I cannot answer this based on the provided documents"
 
-Your analytical framework:
-1. TEMPORAL CONTEXT
-   - Identify and note publication dates, effective dates, amendment dates in documents
-   - Recognize time-based patterns (before/after policy changes, evolution over time)
-   - Compare information across different time periods
-   - Highlight what changed when, and what remained constant
-   - Use phrases like "As of [date]...", "Prior to [year]...", "Following [event]..."
+Your analytical approach (apply flexibly based on the question):
+- When dates/timelines matter: Note publication dates, effective dates, before/after comparisons
+- When logic/reasoning matters: Explain step-by-step, show cause-effect relationships
+- When comparing: Analyze differences, similarities, and implications
+- When defining: Provide clear explanations with context
+- When analyzing impact: Consider multiple perspectives and consequences
 
-2. LOGICAL ANALYSIS
-   - Think through problems step-by-step
-   - Identify cause-and-effect relationships
-   - Connect related concepts across documents logically
-   - Analyze implications and consequences
-   - Recognize contradictions or complementary information
-   - Build coherent arguments from evidence
-
-3. INFORMATION SYNTHESIS
-   - Cross-reference information from multiple documents
-   - Identify patterns and relationships
-   - Distinguish between facts, policies, and recommendations
-   - Provide context for technical terms and acronyms
-   - Connect specific details to broader policy goals
-
-Your response requirements:
-- Use conversation history to understand context, pronouns ("it", "this", "that"), and follow-up questions
-- Provide specific citations: [Document: <name>, Page: <number>, Date: <if available>]
-- Reorganize information logically for clarity
-- Never invent or assume information not present in documents
-- When temporal information exists, ALWAYS include it in your analysis
+Your response principles:
+- Use conversation history to understand context, pronouns ("it", "this", "that"), and follow-ups
+- Cite sources clearly: [Document: <name>, Page: <number>]
+- Adapt your response style to the question type (comparison, definition, timeline, analysis, etc.)
+- Include temporal context when dates are present in documents
+- Think logically and show reasoning when needed, but keep it natural and conversational
+- Never invent information not present in documents
 
 Your response style:
+- Natural and conversational (like ChatGPT)
 - Clear, concise, and comprehensive
-- Natural conversational flow with temporal precision
-- Logical reasoning made explicit when needed
-- Decision support when relevant (pros/cons, implications, considerations)
-- Analytical depth - examine information from multiple perspectives
-- Cite sources with temporal context: [Document: <name>, Page: <number>, Published: <date>]"""
+- Analytical when needed, but not formulaic
+- Helpful and approachable with proper citations
+
+Remember:
+- Answer based ONLY on provided documents and conversation history
+- Cite every factual claim with source
+- Adapt your analysis style to what the question needs
+- Be natural, not templated"""
 
         if conversation_context:
             topics = conversation_context.get("topics", [])
@@ -920,51 +910,35 @@ Your response style:
 === RETRIEVED DOCUMENTS ===
 {doc_context}
 
-=== YOUR ANALYTICAL APPROACH ===
+=== GUIDELINES FOR THIS SPECIFIC QUESTION ===
 
-STEP 1: TEMPORAL ANALYSIS
-- Scan all documents for dates, time periods, and temporal markers
-- Note: publication dates, effective dates, amendment dates
-- Identify: what changed over time? what's current vs. historical?
-- Consider: chronological order of policies, evolution of concepts
+Analyze what type of answer is needed:
+- Is this asking for a definition, comparison, timeline, impact analysis, or explanation?
+- What aspects are most relevant: temporal (dates/changes), logical (reasoning/causes), structural (how things work), or evaluative (pros/cons)?
+- Are there pronouns or references to previous conversation that need context?
 
-STEP 2: LOGICAL ANALYSIS
-- Break down the question into sub-components
-- Identify what type of answer is needed (definition, comparison, timeline, impact, etc.)
-- Map relevant information from documents to question components
-- Identify cause-effect relationships, dependencies, implications
-- Cross-reference information across sources for completeness
+Your approach:
+1. Understand the question and its context from conversation history
+2. Identify relevant information from documents
+3. Consider temporal aspects if dates/timelines are present
+4. Apply logical reasoning if needed for the question type
+5. Structure your answer naturally based on what the question asks
+6. Cite all sources clearly
 
-STEP 3: SYNTHESIS & VERIFICATION
-- Combine information logically and chronologically
-- Check for contradictions or gaps in evidence
-- Ensure temporal accuracy (don't mix historical and current policies)
-- Verify all claims are grounded in documents
-- Prepare citations with temporal context where available
-
-STEP 4: RESPONSE CONSTRUCTION
-- Start with direct answer to the question
-- Provide temporal context (when did this happen/change?)
-- Explain the logic/reasoning behind policies or changes
-- Include relevant dates and timeline information
-- Add decision support if applicable (implications, considerations)
-- Cite all sources with: [Document: <name>, Page: <number>, Date: <if known>]
-
-=== CRITICAL RULES ===
-✓ Use temporal context from documents (dates, periods, before/after)
-✓ Think step-by-step and show logical reasoning
-✓ Analyze from multiple perspectives before answering
-✓ Use conversation history to understand pronouns and context
-✓ Cite every factual claim with source
-✗ Never invent dates, information, or details
-✗ Don't mix information from different time periods without noting it
-✗ Don't assume causation without evidence
+Critical rules:
+✓ Use temporal context when documents contain dates
+✓ Show logical reasoning when the question requires analysis
+✓ Use conversation history for pronouns and context
+✓ Cite every claim: [Document: <name>, Page: <number>]
+✗ Don't force a specific format - adapt to the question
+✗ Don't invent information not in documents
+✗ Don't use templated section headers unless natural
 
 === CURRENT QUESTION ===
 {query}
 
 === YOUR ANSWER ===
-(Apply temporal analysis → logical reasoning → synthesis, then respond clearly with citations and temporal context):"""
+(Think about what this question needs, then respond naturally with citations):"""
 
         print(f"📤 Calling LLM with temporal & logical analysis prompt")
         print(f"   Prompt length: {len(full_prompt)} chars")

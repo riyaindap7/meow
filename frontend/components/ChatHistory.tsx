@@ -287,14 +287,28 @@ export default function ChatHistory() {
                   {/* Show sources if available */}
                   {msg.sources && msg.sources.length > 0 && (
                     <div className="mt-2 pt-2 border-t border-current border-opacity-20">
-                      <p className="text-xs font-semibold mb-1">Sources:</p>
-                      {msg.sources.map((source, idx) => (
-                        <div key={idx} className="text-xs opacity-80">
-                          <span className="font-medium">{source.source}</span>
-                          {source.page && ` (p. ${source.page})`}
-                          {source.score && ` - Score: ${(source.score * 100).toFixed(0)}%`}
-                        </div>
-                      ))}
+                      <p className="text-xs font-semibold mb-1">Sources ({msg.sources.length}):</p>
+                      <div className="max-h-32 overflow-y-auto space-y-1">
+                        {msg.sources.map((source, idx) => {
+                          const score = Number(source.score || 0);
+                          let normalizedScore = 0;
+                          if (score >= 0 && score <= 1) {
+                            normalizedScore = score * 100;
+                          } else {
+                            const scores = msg.sources.map(s => Number(s.score || 0));
+                            const minScore = Math.min(...scores);
+                            const maxScore = Math.max(...scores);
+                            normalizedScore = ((score - minScore) / (maxScore - minScore)) * 100;
+                          }
+                          return (
+                            <div key={idx} className="text-xs opacity-80">
+                              <span className="font-medium">{source.source_file || source.document_name || source.source || 'Unknown'}</span>
+                              {(source.page_idx || source.page) && ` (p. ${source.page_idx || source.page})`}
+                              {source.score !== undefined && source.score !== null && ` - ${normalizedScore.toFixed(1)}% match`}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                   

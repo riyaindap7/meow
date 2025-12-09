@@ -316,6 +316,9 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
         formatted_sources = []
         for source in result.get("sources", []):
             try:
+                # Use document_id directly as the source name
+                source_name = source.get('document_id', '')
+                
                 formatted_sources.append(SearchResult(
                     text=source.get("text", ""),
                     source=source.get("source", ""),
@@ -328,7 +331,11 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
                     section_hierarchy=source.get("section_hierarchy"),
                     heading_context=source.get("heading_context"),
                     char_count=source.get("char_count"),
-                    word_count=source.get("word_count")
+                    word_count=source.get("word_count"),
+                    # Use document_id directly as the name
+                    source_file=source_name,
+                    page_idx=source.get('page_idx') or source.get('page', 0),
+                    document_name=source_name
                 ))
             except Exception as e:
                 print(f"⚠️ Error formatting source: {e}")
