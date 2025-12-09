@@ -35,6 +35,7 @@ interface Conversation {
 }
 
 interface ChatResponse {
+  method: string;
   answer: string;
   conversation_id: string;
   sources?: Array<{
@@ -200,6 +201,7 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
     try {
       console.log(`📤 Sending message to conversation: ${currentConversation}`);
       console.log(`   Query: "${userMessage}"`);
+      console.log(`   Method: hybrid`);
       console.log(`   Filters:`, searchFilters);
       
       // Add user message to UI immediately
@@ -217,13 +219,14 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
         conversation_id: currentConversation,
         top_k: topK,
         temperature,
+        method: "hybrid",  // ✅ Always use hybrid search
       };
 
-      // Add filters if they exist
+      // ✅ Add filters if they exist (same as before)
       if (searchFilters.category) requestBody.category = searchFilters.category;
       if (searchFilters.language) requestBody.language = searchFilters.language;
       if (searchFilters.document_type) requestBody.document_type = searchFilters.document_type;
-      if (searchFilters.document_name) requestBody.document_name = searchFilters.document_name;
+      if (searchFilters.document_id) requestBody.document_id = searchFilters.document_id;
       if (searchFilters.date_from) requestBody.date_from = searchFilters.date_from;
       if (searchFilters.date_to) requestBody.date_to = searchFilters.date_to;
 
@@ -242,8 +245,9 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
       if (response.ok) {
         const data: ChatResponse = await response.json();
         console.log(`✅ Received response from backend`);
-        console.log(`   Answer: "${data.answer}"`);
+        console.log(`   Answer: "${data.answer.substring(0, 100)}..."`);
         console.log(`   Sources: ${data.sources?.length || 0}`);
+        console.log(`   Method used: ${data.method || 'hybrid'}`);
 
         if (!data.answer) {
           console.error('⚠️ WARNING: No answer in response!');
@@ -263,11 +267,12 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
 
         // Update conversation title if it's still "New Conversation"
         if (currentTitle === 'New Conversation') {
-          setCurrentTitle(userMessage.substring(0, 50));
+          const newTitle = userMessage.substring(0, 50);
+          setCurrentTitle(newTitle);
           setConversations(prev => 
             prev.map(conv => 
               conv.conversation_id === currentConversation 
-                ? { ...conv, title: userMessage.substring(0, 50) }
+                ? { ...conv, title: newTitle }
                 : conv
             )
           );
@@ -900,7 +905,7 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
             </div>
           </div>
 
-          {/* Input Area - EXISTING CODE WITH VOICE INPUT */}
+          {/* Input Area - WITH FILTER */}
           <div className="border-t border-neutral-800/50 p-6 bg-gradient-to-b from-black/80 to-black backdrop-blur-xl">
             <div className="max-w-4xl mx-auto">
               <form onSubmit={sendMessage} className="flex gap-3">
@@ -910,13 +915,13 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
                   currentFilters={searchFilters}
                 />
 
-                {/* 🎤 Voice Input Component */}
+                {/* Voice Input Component */}
                 <VoiceInput 
                   onTranscript={handleVoiceTranscript}
                   authToken={authToken}
                 />
 
-                {/* Text Input - EXISTING */}
+                {/* Text Input */}
                 <input
                   type="text"
                   value={inputValue}
@@ -930,6 +935,7 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
                   className="flex-1 px-4 py-3 bg-neutral-900/80 border border-neutral-800/60 rounded-xl text-white placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-neutral-300/60 focus:border-neutral-300/60 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg"
                 />
 
+                {/* Send Button */}
                 <button
                   type="submit"
                   disabled={!inputValue.trim() || !currentConversation || loading}
@@ -943,18 +949,8 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
                     </>
                   ) : (
                     <>
-                      <svg
-                        className="w-5 h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
-                        />
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                       </svg>
                       <span className="hidden sm:inline">Send</span>
                     </>
@@ -962,25 +958,15 @@ export default function ChatInterface({ authToken, userName = 'User' }: ChatInte
                 </button>
               </form>
 
-              {/* Language hint - UPDATED */}
+              {/* Language hint */}
               <div className="flex items-center justify-between mt-3 text-xs text-neutral-500">
                 <p className="flex items-center gap-1.5">
-                  <svg
-                    className="w-3.5 h-3.5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
-                  Voice input supports English, Hindi, Tamil, Telugu & more
+                  Hybrid search with filters • Voice input • English, Hindi, Tamil & more
                 </p>
-                <p className="hidden sm:block">Press Enter to send • Use filters to narrow search</p>
+                <p className="hidden sm:block">Press Enter to send</p>
               </div>
             </div>
           </div>

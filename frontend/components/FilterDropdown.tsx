@@ -12,7 +12,7 @@ export interface SearchFilters {
   category?: string;
   language?: string;
   document_type?: string;
-  document_name?: string;
+  document_id?: string;
   date_from?: string;
   date_to?: string;
 }
@@ -73,8 +73,9 @@ export default function FilterDropdown({ onFilterChange, currentFilters }: Filte
 
   return (
     <div className="relative">
-      {/* Filter Button */}
+      {/* Filter Button - ✅ Added type="button" to prevent form submission */}
       <button
+        type="button"
         onClick={() => setIsOpen(!isOpen)}
         className={`p-3 rounded-lg transition-all flex items-center gap-2 ${
           hasActiveFilters
@@ -101,6 +102,7 @@ export default function FilterDropdown({ onFilterChange, currentFilters }: Filte
               <h3 className="font-semibold text-neutral-200">Filter Documents</h3>
             </div>
             <button
+              type="button"
               onClick={() => setIsOpen(false)}
               className="p-1 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-neutral-100"
             >
@@ -167,16 +169,16 @@ export default function FilterDropdown({ onFilterChange, currentFilters }: Filte
               </select>
             </div>
 
-            {/* Document Name Search */}
+            {/* Document ID Search */}
             <div>
               <label className="block text-sm font-medium text-neutral-300 mb-2">
-                Document Name (contains)
+                Document ID (contains)
               </label>
               <input
                 type="text"
-                value={filters.document_name || ""}
-                onChange={(e) => handleFilterChange("document_name", e.target.value)}
-                placeholder="e.g., NEP, RUSA, Policy"
+                value={filters.document_id || ""}
+                onChange={(e) => handleFilterChange("document_id", e.target.value)}
+                placeholder="e.g., RTEAct, NEP2020, RUSA"
                 className="w-full px-3 py-2 bg-neutral-800/60 border border-neutral-700/50 rounded-lg text-neutral-200 text-sm placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
               />
             </div>
@@ -219,6 +221,7 @@ export default function FilterDropdown({ onFilterChange, currentFilters }: Filte
                     return (
                       <button
                         key={key}
+                        type="button"
                         onClick={() => clearSingleFilter(key as keyof SearchFilters)}
                         className="px-2 py-1 bg-blue-500/20 border border-blue-500/50 text-blue-300 rounded-md text-xs flex items-center gap-1 hover:bg-blue-500/30 transition"
                       >
@@ -236,6 +239,7 @@ export default function FilterDropdown({ onFilterChange, currentFilters }: Filte
           {/* Action Buttons - Sticky */}
           <div className="bg-neutral-900/98 border-t border-neutral-700/50 px-4 py-3 flex gap-2 flex-shrink-0">
             <button
+              type="button"
               onClick={clearFilters}
               disabled={!hasActiveFilters}
               className="flex-1 px-4 py-2 bg-neutral-800/60 border border-neutral-700/50 text-neutral-300 rounded-lg text-sm font-medium hover:bg-neutral-700/60 disabled:opacity-50 disabled:cursor-not-allowed transition"
@@ -243,6 +247,7 @@ export default function FilterDropdown({ onFilterChange, currentFilters }: Filte
               Clear All
             </button>
             <button
+              type="button"
               onClick={applyFilters}
               className="flex-1 px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg text-sm font-medium transition"
             >

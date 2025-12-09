@@ -459,7 +459,7 @@ class FullLangChainRAG:
     """
     
     def __init__(self):
-        print("🔧 Initializing Full LangChain RAG with TRUE Memory...")
+        print("🔧 Initializing FullLangChainRAG with TRUE Memory...")
         
         # Initialize OpenRouter LLM
         self.llm = OpenRouterLLM()
@@ -476,6 +476,20 @@ class FullLangChainRAG:
         
         # Initialize document retriever
         self.retriever = DocumentRetriever(self.milvus_client)
+        
+        # ✅ Initialize conversation_manager (not used for chains, just for reference)
+        self.conversation_manager = None
+        try:
+            from services.conversation_service import get_conversation_service
+            self.conversation_manager = get_conversation_service()
+            print("✅ Conversation service initialized")
+        except Exception as e:
+            print(f"⚠️ Conversation service not available: {str(e)}")
+        
+        # ✅ ADD: Initialize conversation manager
+        from services.conversation_service import get_conversation_service
+        self.conversation_manager = get_conversation_service()
+        print("✅ Conversation manager initialized")
         
         # Initialize MongoDB connection for TRUE LangChain memory
         self.mongodb_service = None
@@ -682,22 +696,89 @@ Return only valid JSON, no extra text:"""
     def _retrieve_documents(self, query: str, top_k: int, dense_weight: float, 
                            sparse_weight: float, method: str, 
                            conversation_context: dict = None,
-                           filter_expr: str = None):  # Add filter_expr parameter
-        """Retrieve documents with context-aware reranking and metadata filters"""
+                           filter_expr: str = None,
+                           document_keyword: str = None):
+        """Retrieve documents - filtered mode or normal mode"""
         
-        # Get more results for reranking
-        results = self.milvus_client.search(
-            query=query,
-            top_k=top_k * 2,
-            method=method,
-            filter_expr=filter_expr  # Pass filters to Milvus search
-        )
+        print(f"\n🔍 DOCUMENT RETRIEVAL")
+        print(f"   Query: {query}")
+        print(f"   Method: {method}")
+        print(f"   Top-K: {top_k}")
+        print(f"   Filter: {filter_expr or 'None'}")
         
-        # Apply context-based reranking if context exists
-        if conversation_context and results:
-            results = self._rerank_with_context(results, conversation_context)
+        try:
+            # ✅ Always fetch 50 documents for reranking (regardless of requested top_k)
+            retrieval_limit = 50
+            
+            results = self.milvus_client.search(
+                query=query,
+                top_k=retrieval_limit,
+                method=method,
+                filter_expr=filter_expr  # ✅ Metadata filter includes document_id
+            )
+            
+            print(f"   📊 Retrieved: {len(results)} results")
+            
+            # ✅ REMOVED: No keyword filtering - metadata handles document_id
+            
+            # Deduplicate
+            unique_results = self._deduplicate_results(results)
+            print(f"   📊 After deduplication: {len(unique_results)}")
+            
+            if len(unique_results) == 0:
+                print(f"   ❌ No documents found")
+                return []
+            
+            # Cross-encoder reranking (replaces context-based reranking)
+            print(f"   🔄 Applying cross-encoder reranking...")
+            from services.reranker_service import get_reranker
+            reranker = get_reranker()
+            reranked_docs = reranker.rerank(
+                query=query,
+                documents=unique_results,
+                top_k=15,  # Changed from 3 to 15
+                min_k=3
+            )
+            
+            # Take top-k (already done by reranker, but ensure consistency)
+            final_results = reranked_docs[:top_k]
+            
+            print(f"   ✅ Final: {len(final_results)} documents")
+            if final_results:
+                avg_chars = sum(r.get('char_count', 0) for r in final_results) / len(final_results)
+                doc_names = set(r.get('document_name', 'unknown') for r in final_results)
+                print(f"   📊 Avg length: {avg_chars:.0f} chars")
+                print(f"   📄 Documents: {', '.join(list(doc_names)[:3])}")
+            
+            return final_results
+            
+        except Exception as e:
+            print(f"   ❌ Retrieval error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _deduplicate_results(self, results: list) -> list:
+        """Remove duplicate or very similar chunks"""
+        if not results:
+            return []
         
-        return results[:top_k]
+        unique_results = []
+        seen_texts = set()
+        
+        for result in results:
+            text = result.get('text', '').strip()
+            
+            if len(text) < 50:
+                continue
+            
+            normalized = text.lower()[:200]
+            
+            if normalized not in seen_texts:
+                seen_texts.add(normalized)
+                unique_results.append(result)
+        
+        return unique_results
     
     def _rerank_with_context(self, results: list, context: dict) -> list:
         """Rerank results based on conversation context"""
@@ -733,7 +814,10 @@ Return only valid JSON, no extra text:"""
         return results
     
     def _generate_answer(self, query: str, documents: list, temperature: float,
-                        conversation_history: list, conversation_context: dict = None):
+                        conversation_history: list = None, conversation_context: dict = None):
+        """Generate answer using LLM with documents and conversation history"""
+        if conversation_history is None:
+            conversation_history = []
         """Generate answer with context-aware system prompt"""
         
         # Build system prompt with conversation context and temporal awareness
@@ -899,96 +983,116 @@ STEP 4: RESPONSE CONSTRUCTION
             dense_weight: float = 0.6, sparse_weight: float = 0.4, 
             method: str = "hybrid",
             conversation_context: dict = None,
-            filter_expr: str = None):  # Add filter_expr parameter
+            filter_expr: str = None,
+            document_keyword: str = None):
         """Execute full RAG pipeline with conversation context awareness and filters"""
         
         print(f"\n🔵 LANGCHAIN RAG EXECUTION")
         print(f"   Query: {query}")
-        print(f"   Conversation ID: {conversation_id}")
-        print(f"   Context received: {bool(conversation_context)}")
-        print(f"   Filter expression: {filter_expr or 'None'}")
+        print(f"   Filter: {filter_expr or 'None'}")
+        print(f"   Keyword: {document_keyword or 'None'}")
         
-        if conversation_context:
-            print(f"   📌 Context Topics: {conversation_context.get('topics', [])[:3]}")
-            print(f"   📌 Context Entities: {conversation_context.get('main_entities', [])[:3]}")
-            print(f"   📌 User Goal: {conversation_context.get('user_goal', '')[:100]}")
-        
-        # STEP 1: Query enhancement with context
-        enhanced_query = self._enhance_query_with_context(query, conversation_context)
-        
-        # STEP 2: Document retrieval with context reranking and filters
-        print(f"\n🔍 RETRIEVING DOCUMENTS (method: {method}, top_k: {top_k})")
-        documents = self._retrieve_documents(
-            enhanced_query, 
-            top_k, 
-            dense_weight, 
-            sparse_weight, 
-            method,
-            conversation_context,
-            filter_expr  # Pass filter expression
-        )
-        print(f"   Retrieved {len(documents)} documents")
-        if documents:
-            print(f"   Top document score: {documents[0].get('score', 0):.4f}")
-            if filter_expr:
-                print(f"   ✅ Filters applied successfully")
-        
-        # STEP 3: Get conversation history
-        conversation_history = []
-        if conversation_id:
-            from services.mongodb_service import mongodb_service
-            conversation_history = mongodb_service.get_last_messages(conversation_id, limit=6)
-            print(f"   Loaded {len(conversation_history)} history messages")
-        
-        # STEP 4: Generate answer with context in system prompt
-        print(f"\n🤖 GENERATING ANSWER")
-        answer = self._generate_answer(
-            query, 
-            documents, 
-            temperature, 
-            conversation_history,
-            conversation_context
-        )
-        
-        print(f"   Answer length: {len(answer)} chars")
-        print(f"   Answer preview: {answer[:150]}...")
-        
-        # STEP 5: Save messages to MongoDB
-        if conversation_id:
-            from services.mongodb_service import mongodb_service
-            mongodb_service.add_message(conversation_id, user_id, "user", query)
-            mongodb_service.add_message(
-                conversation_id, 
-                user_id, 
-                "assistant", 
-                answer,
-                metadata={"sources": [d.get("document_name") for d in documents[:5]]}
-            )
-            print(f"   💾 Messages saved to MongoDB")
+        try:
+            # STEP 1: Enhance query with context
+            enhanced_query = self._enhance_query_with_context(query, conversation_context) if conversation_context else query
             
-            # STEP 6: Update conversation context asynchronously
-            self._update_conversation_context(
-                conversation_id, 
-                user_id, 
-                query, 
-                answer, 
-                documents
+            # STEP 2: Retrieve documents
+            print(f"\n🔍 RETRIEVING DOCUMENTS (method: {method}, top_k: {top_k})")
+            documents = self._retrieve_documents(
+                enhanced_query, 
+                top_k, 
+                dense_weight, 
+                sparse_weight, 
+                method,
+                conversation_context,
+                filter_expr,
+                document_keyword
             )
-        
-        return {
-            "answer": answer,
-            "sources": documents,
-            "conversation_id": conversation_id,
-            "model_used": self.model_name
-        }
+            print(f"   Retrieved {len(documents)} documents")
+            
+            # STEP 3: Get conversation history from MongoDB
+            conversation_history = []
+            if conversation_id:
+                from services.mongodb_service import mongodb_service
+                conversation_history = mongodb_service.get_last_messages(conversation_id, limit=6)
+                print(f"   Loaded {len(conversation_history)} history messages")
+            else:
+                # Create new conversation if needed
+                if user_id:
+                    from services.mongodb_service import mongodb_service
+                    conversation_id = mongodb_service.create_conversation(user_id, title="New Chat")
+                    print(f"   Created new conversation: {conversation_id}")
+                else:
+                    conversation_id = "temp_" + str(int(time.time()))
+                    print(f"   Using temporary conversation: {conversation_id}")
+            
+            # STEP 4: Generate answer
+            print(f"\n🤖 GENERATING ANSWER")
+            answer = self._generate_answer(
+                query=query,
+                documents=documents,
+                temperature=temperature,
+                conversation_history=conversation_history,
+                conversation_context=conversation_context
+            )
+            
+            # STEP 5: Update context if needed
+            if conversation_context:
+                self._update_conversation_context(
+                    conversation_id, 
+                    query, 
+                    answer, 
+                    documents, 
+                    conversation_context
+                )
+            
+            # ✅ ALWAYS RETURN A VALID DICTIONARY
+            result = {
+                "answer": answer if answer else "I apologize, but I couldn't generate an answer.",
+                "sources": documents if documents else [],
+                "conversation_id": conversation_id,
+                "model_used": self.model_name,
+                "method": method
+            }
+            
+            print(f"✅ RAG execution complete")
+            print(f"   Answer length: {len(result['answer'])} chars")
+            print(f"   Sources: {len(result['sources'])}")
+            
+            return result
+            
+        except Exception as e:
+            print(f"❌ Error in ask(): {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # ✅ RETURN ERROR RESULT INSTEAD OF None
+            return {
+                "answer": f"I encountered an error: {str(e)}. Please try again.",
+                "sources": [],
+                "conversation_id": conversation_id if conversation_id else "error",
+                "model_used": self.model_name,
+                "method": method
+            }
 
-# ========== SINGLETON INSTANCE ==========
-_full_langchain_rag_instance = None
+# Global singleton instance
+_langchain_rag_instance = None
 
-def get_full_langchain_rag() -> FullLangChainRAG:
-    """Get or create the singleton FullLangChainRAG instance"""
-    global _full_langchain_rag_instance
-    if _full_langchain_rag_instance is None:
-        print("🔧 Creating new FullLangChainRAG instance...")
-        _full_langchain_rag_instance = FullLangChainRAG()
-    return _full_langchain_rag_instance
+
+def get_full_langchain_rag() -> 'FullLangChainRAG':
+    """Get or create FullLangChainRAG singleton instance"""
+    global _langchain_rag_instance
+    
+    if _langchain_rag_instance is None:
+        print("🔧 Initializing FullLangChainRAG singleton...")
+        _langchain_rag_instance = FullLangChainRAG()
+        print("✅ FullLangChainRAG singleton ready")
+    
+    return _langchain_rag_instance
+
+
+def reset_langchain_rag():
+    """Reset the singleton instance (useful for testing)"""
+    global _langchain_rag_instance
+    _langchain_rag_instance = None
+    print("♻️ FullLangChainRAG singleton reset")

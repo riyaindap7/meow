@@ -17,7 +17,7 @@ from api.dependencies import verify_auth_token
 from services.conversation_service import get_conversation_service
 from api.milvus_client import get_milvus_client
 from services.full_langchain_service import get_full_langchain_rag
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 
 
@@ -157,58 +157,118 @@ async def health_check():
             detail=f"Health check failed: {str(e)}"
         )
 
-# RAG endpoint (search + LLM generation)
+# helper to update conversation context/messages in MongoDB (used by /ask)
+async def _update_conversation_context(conversation_id, user_id, user_query, assistant_answer, conversation_context):
+    try:
+        from services.mongodb_service import get_mongo_db
+        from datetime import datetime
+
+        db = get_mongo_db()
+
+        now = datetime.utcnow()
+
+        # Prepare message documents
+        user_msg = {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "user",
+            "text": user_query,
+            "created_at": now
+        }
+        assistant_msg = {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "role": "assistant",
+            "text": assistant_answer,
+            "created_at": now
+        }
+
+        # Insert messages into messages collection if available
+        try:
+            if hasattr(db, "messages"):
+                db.messages.insert_many([user_msg, assistant_msg])
+            else:
+                db.get_collection("messages").insert_many([user_msg, assistant_msg])
+        except Exception as insert_err:
+            # Non-fatal: log and continue to update conversation metadata
+            print(f"⚠️ Failed to insert messages for conversation {conversation_id}: {insert_err}")
+
+        # Update conversation metadata: increment message_count and set updated_at
+        try:
+            db.conversations.update_one(
+                {"conversation_id": conversation_id, "user_id": user_id},
+                {"$inc": {"message_count": 2}, "$set": {"updated_at": now}}
+            )
+        except Exception as upd_err:
+            print(f"⚠️ Failed to update conversation metadata for {conversation_id}: {upd_err}")
+
+    except Exception as e:
+        # Catch-all so this helper never raises and breaks the main flow
+        print(f"⚠️ Could not update conversation context: {e}")
+
+# Simplified approach - strict filtering when filters provided
+
 @app.post("/ask", response_model=RAGResponse)
 async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
     """RAG with hybrid retrieval and role-based parameters"""
     try:
-        print(f"📤 QUERY: {request.query} | USER: {user.get('email', 'unknown')} | ROLE: {user.get('role', 'user')}")
+        print(f"\n" + "="*80)
+        print(f"📤 NEW RAG REQUEST")
+        print(f"="*80)
+        print(f"   Query: {request.query}")
+        print(f"   User: {user.get('email', 'unknown')}")
+        print(f"   Role: {user.get('role', 'user')}")
         
-        # Build filter expression from request parameters
-        filters = []
-        if request.category:
-            filters.append(f'Category == "{request.category}"')
-            print(f"   🏷️ Filter: Category = {request.category}")
-        if request.language:
-            filters.append(f'language == "{request.language}"')
-            print(f"   🌐 Filter: Language = {request.language}")
-        if request.document_type:
-            filters.append(f'document_type == "{request.document_type}"')
-            print(f"   📄 Filter: Document Type = {request.document_type}")
-        if request.document_name:
-            # Use LIKE operator for partial match
-            filters.append(f'document_name like "%{request.document_name}%"')
-            print(f"   📝 Filter: Document Name contains '{request.document_name}'")
-        if request.date_from and request.date_to:
-            filters.append(f'published_date >= "{request.date_from}" && published_date <= "{request.date_to}"')
-            print(f"   📅 Filter: Date range {request.date_from} to {request.date_to}")
+        # ✅ Check if ANY filter is provided
+        has_filters = any([
+            getattr(request, 'category', None),
+            getattr(request, 'language', None),
+            getattr(request, 'document_type', None),
+            getattr(request, 'document_id', None),
+            getattr(request, 'ministry', None),
+            getattr(request, 'date_from', None),
+            getattr(request, 'date_to', None)
+        ])
         
-        filter_expr = ' && '.join(filters) if filters else None
+        if has_filters:
+            print(f"\n🔍 FILTERED MODE: Applying metadata filters")
+            
+            # ✅ Build filter expression (INCLUDING document_id)
+            filter_expr = build_filter_expression(
+                category=getattr(request, 'category', None),
+                language=getattr(request, 'language', None),
+                document_type=getattr(request, 'document_type', None),
+                document_id=getattr(request, 'document_id', None),  # ✅ Include in metadata filter
+                date_from=getattr(request, 'date_from', None),
+                date_to=getattr(request, 'date_to', None),
+                ministry=getattr(request, 'ministry', None)
+            )
+            
+            # ✅ Don't enhance query or use keyword filter
+            # The metadata filter handles document_id
+            search_query = request.query
+            document_keyword = None  # ✅ No content-based keyword filtering
+        else:
+            print(f"\n🔍 NORMAL MODE: Semantic search without filters")
+            filter_expr = None
+            search_query = request.query
+            document_keyword = None
         
-        if filter_expr:
-            print(f"   🔍 Combined filter expression: {filter_expr}")
-        
-        # Get conversation context from MongoDB if conversation_id exists
+        # Get conversation context
         conversation_context = None
         if request.conversation_id:
-            from services.mongodb_service import get_conversation
-            conv = get_conversation(request.conversation_id, user["user_id"])
+            from services.mongodb_service import mongodb_service
+            conv = mongodb_service.get_conversation(request.conversation_id, user["user_id"])
             if conv:
                 conversation_context = conv.get("context", {})
-                print(f"📌 LOADED CONVERSATION CONTEXT:")
-                print(f"   Topics: {conversation_context.get('topics', [])}")
-                print(f"   Entities: {conversation_context.get('main_entities', [])}")
-                print(f"   User Goal: {conversation_context.get('user_goal', '')}")
         
-        # Get LangChain RAG service
-        from backend.services.full_langchain_service import get_full_langchain_rag
+        # Get RAG service
         langchain_rag = get_full_langchain_rag()
-        
         total_start = time.time()
         
-        # Execute RAG with conversation context and filters
+        # ✅ Execute RAG with metadata filter
         result = langchain_rag.ask(
-            query=request.query,
+            query=search_query,
             user_id=user["user_id"],
             conversation_id=request.conversation_id,
             temperature=request.temperature,
@@ -218,8 +278,27 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
             sparse_weight=request.sparse_weight,
             method=request.method,
             conversation_context=conversation_context,
-            filter_expr=filter_expr  # Pass filter expression
+            filter_expr=filter_expr,  # ✅ Metadata filter includes document_id
+            document_keyword=document_keyword  # ✅ No keyword filtering
         )
+        
+        # ✅ SAFETY CHECK: Ensure result is valid
+        if not result or not isinstance(result, dict):
+            print(f"⚠️ WARNING: Invalid result from RAG: {type(result)}")
+            result = {
+                "answer": "I apologize, but I couldn't process your request. Please try again.",
+                "sources": [],
+                "conversation_id": request.conversation_id or "error",
+                "model_used": "unknown",
+                "method": request.method
+            }
+        
+        # Ensure all required keys exist
+        result.setdefault("answer", "No answer generated")
+        result.setdefault("sources", [])
+        result.setdefault("conversation_id", request.conversation_id or "error")
+        result.setdefault("model_used", "unknown")
+        result.setdefault("method", request.method)
         
         total_latency = (time.time() - total_start) * 1000
         
@@ -236,26 +315,34 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
         # Format sources for response
         formatted_sources = []
         for source in result.get("sources", []):
-            formatted_sources.append(SearchResult(
-                text=source.get("text", ""),
-                source=source.get("source", ""),
-                page=source.get("page", 0),
-                score=source.get("score", 0.0),
-                document_id=source.get("document_id"),
-                chunk_id=source.get("chunk_id"),
-                global_chunk_id=source.get("global_chunk_id"),
-                chunk_index=source.get("chunk_index"),
-                section_hierarchy=source.get("section_hierarchy"),
-                heading_context=source.get("heading_context"),
-                char_count=source.get("char_count"),
-                word_count=source.get("word_count")
-            ))
+            try:
+                formatted_sources.append(SearchResult(
+                    text=source.get("text", ""),
+                    source=source.get("source", ""),
+                    page=source.get("page", 0),
+                    score=source.get("score", 0.0),
+                    document_id=source.get("document_id"),
+                    chunk_id=source.get("chunk_id"),
+                    global_chunk_id=source.get("global_chunk_id"),
+                    chunk_index=source.get("chunk_index"),
+                    section_hierarchy=source.get("section_hierarchy"),
+                    heading_context=source.get("heading_context"),
+                    char_count=source.get("char_count"),
+                    word_count=source.get("word_count")
+                ))
+            except Exception as e:
+                print(f"⚠️ Error formatting source: {e}")
+                continue
         
-        print(f"✅ RAG complete | Total: {total_latency:.0f}ms | Sources: {len(formatted_sources)}")
+        print(f"\n✅ RAG COMPLETE")
+        print(f"   Mode: {'FILTERED' if has_filters else 'NORMAL'}")
+        print(f"   Sources: {len(formatted_sources)}")
+        print(f"   Latency: {total_latency:.0f}ms")
+        print(f"="*80)
         
         return RAGResponse(
             query=request.query,
-            answer=result["answer"],
+            answer=result.get("answer", "No answer generated"),
             sources=formatted_sources,
             conversation_id=result.get("conversation_id"),
             model_used=result.get("model_used", "unknown"),
@@ -265,12 +352,141 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
     
     except Exception as e:
         import traceback
-        error_trace = traceback.format_exc()
-        print(f"❌ RAG Error: {str(e)}")
-        print(error_trace)
+        print(f"\n❌ RAG ERROR: {e}")
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"RAG failed: {str(e)}"
+        )
+
+# Helper function to build filter expression
+def build_filter_expression(
+    category: Optional[str] = None,
+    language: Optional[str] = None,
+    document_type: Optional[str] = None,
+    document_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    ministry: Optional[str] = None
+) -> Optional[str]:
+    """Build Milvus filter expression from filter parameters"""
+    filters = []
+    
+    print(f"\n🔍 BUILDING FILTER EXPRESSION")
+    
+    if category:
+        filters.append(f'Category == "{category}"')
+        print(f"   🏷️ Filter: Category = '{category}'")
+    
+    if language:
+        filters.append(f'language == "{language}"')
+        print(f"   🌐 Filter: Language = '{language}'")
+    
+    if document_type:
+        filters.append(f'document_type == "{document_type}"')
+        print(f"   📄 Filter: Document Type = '{document_type}'")
+    
+    # ✅ FIX: Use document_id as metadata filter (Milvus LIKE for substring match)
+    if document_id:
+        # Milvus LIKE: searches for exact substring match (no % needed)
+        filters.append(f'document_id like "{document_id}"')
+        print(f"   📝 Filter: Document ID contains '{document_id}'")
+    
+    if ministry:
+        filters.append(f'ministry == "{ministry}"')
+        print(f"   🏛️ Filter: Ministry = '{ministry}'")
+    
+    if date_from and date_to:
+        filters.append(f'published_date >= "{date_from}" && published_date <= "{date_to}"')
+        print(f"   📅 Filter: Date range {date_from} to {date_to}")
+    elif date_from:
+        filters.append(f'published_date >= "{date_from}"')
+        print(f"   📅 Filter: Date from {date_from}")
+    elif date_to:
+        filters.append(f'published_date <= "{date_to}"')
+        print(f"   📅 Filter: Date until {date_to}")
+    
+    filter_expr = ' && '.join(filters) if filters else None
+    
+    if filter_expr:
+        print(f"   ✅ Metadata filter: {filter_expr}")
+    else:
+        print(f"   ℹ️ No metadata filters - using semantic search")
+    
+    return filter_expr
+
+# Search endpoint (vector, BM25, or hybrid)
+@app.post("/search", response_model=SearchResponse)
+async def search(request: QueryRequest):
+    """Search using vector, BM25, or hybrid method with filters"""
+    try:
+        print(f"\n🔍 SEARCH ENDPOINT")
+        print(f"   Query: {request.query}")
+        print(f"   Method: {request.method}")
+        print(f"   Top-K: {request.top_k}")
+        
+        milvus_client = get_milvus_client()
+        start_time = time.time()
+        
+        # Build filter expression using helper function
+        filter_expr = build_filter_expression(
+            category=request.category,
+            language=request.language,
+            document_type=request.document_type,
+            document_id=request.document_id,
+            date_from=request.date_from,
+            date_to=request.date_to
+        )
+        
+        # Use the method from request with filters
+        results = milvus_client.search(
+            query=request.query,
+            top_k=request.top_k,
+            method=request.method,  # ✅ hybrid/vector/sparse
+            filter_expr=filter_expr  # ✅ Filters applied
+        )
+        
+        search_latency = (time.time() - start_time) * 1000
+        
+        search_results = [
+            SearchResult(
+                text=result.get('text'),
+                source=result.get('document_name'),
+                page=result.get('page_idx'),
+                score=result.get('score'),
+                document_id=result.get('document_id'),
+                chunk_id=result.get('chunk_id'),
+                global_chunk_id=result.get('global_chunk_id'),
+                chunk_index=result.get('chunk_index'),
+                section_hierarchy=result.get('section_hierarchy'),
+                heading_context=result.get('heading_context'),
+                char_count=result.get('char_count'),
+                word_count=result.get('word_count'),
+                published_date=result.get('published_date'),
+                language=result.get('language'),
+                category=result.get('category'),
+                document_type=result.get('document_type'),
+                ministry=result.get('ministry'),
+                source_reference=result.get('source_reference')
+            ) for result in results
+        ]
+        
+        print(f"✅ Search complete | Method: {request.method} | Filters: {filter_expr or 'None'} | Results: {len(search_results)} | Latency: {search_latency:.0f}ms")
+        
+        return SearchResponse(
+            query=request.query,
+            results=search_results,
+            count=len(search_results),
+            latency_ms=round(search_latency, 2)
+        )
+    
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        print(f"❌ Search error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Search failed: {str(e)}"
         )
 
 # Advanced hybrid search endpoint with filtering
@@ -278,32 +494,32 @@ async def ask(request: RAGRequest, user: dict = Depends(verify_auth_token)):
 async def hybrid_search(request: HybridSearchRequest):
     """Advanced hybrid search with filtering options"""
     try:
+        print(f"\n🔍 HYBRID SEARCH ENDPOINT")
+        print(f"   Query: {request.query}")
+        print(f"   Top-K: {request.top_k}")
+        
         milvus_client = get_milvus_client()
         
-        # Build filter expression
-        filters = []
-        if request.category:
-            filters.append(f'Category == "{request.category}"')
-        if request.ministry:
-            filters.append(f'ministry == "{request.ministry}"')
-        if request.document_type:
-            filters.append(f'document_type == "{request.document_type}"')
-        if request.language:
-            filters.append(f'language == "{request.language}"')
-        if request.date_from and request.date_to:
-            filters.append(f'published_date >= "{request.date_from}" && published_date <= "{request.date_to}"')
-        
-        filter_expr = ' && '.join(filters) if filters else None
+        # Build filter expression using helper function
+        filter_expr = build_filter_expression(
+            category=request.category,
+            language=request.language,
+            document_type=request.document_type,
+            document_id=request.document_id,
+            date_from=request.date_from,
+            date_to=request.date_to,
+            ministry=request.ministry
+        )
         
         # Measure search latency
         start_time = time.time()
         
-        # Perform hybrid search
+        # Perform hybrid search with filters
         results = milvus_client.search(
             query=request.query,
             top_k=request.top_k,
             filter_expr=filter_expr,
-            method="hybrid"
+            method="hybrid"  # ✅ Always hybrid
         )
         
         search_latency = (time.time() - start_time) * 1000
@@ -333,7 +549,7 @@ async def hybrid_search(request: HybridSearchRequest):
             ) for result in results
         ]
         
-        print(f"🔍 Hybrid search: {request.query} | Filters: {filter_expr} | Results: {len(search_results)}")
+        print(f"✅ Hybrid search complete | Filters: {filter_expr or 'None'} | Results: {len(search_results)} | Latency: {search_latency:.0f}ms")
         
         return SearchResponse(
             query=request.query,
@@ -343,74 +559,12 @@ async def hybrid_search(request: HybridSearchRequest):
         )
     
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except Exception as e:
-        print(f"Hybrid search error: {str(e)}")
+        print(f"❌ Hybrid search error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Hybrid search failed: {str(e)}"
-        )
-
-# Search endpoint (vector, BM25, or hybrid)
-@app.post("/search", response_model=SearchResponse)
-async def search(request: QueryRequest):
-    """Search using vector, BM25, or hybrid method with weights"""
-    try:
-        milvus_client = get_milvus_client()
-        start_time = time.time()
-        
-        # Use the method from request with weights
-        results = milvus_client.search(
-            query=request.query,
-            top_k=request.top_k,
-            method=request.method,
-            filter_expr=request.filter_expr
-        )
-        
-        search_latency = (time.time() - start_time) * 1000
-        
-        search_results = [
-            SearchResult(
-                text=result.get('text'),
-                source=result.get('document_name'),
-                page=result.get('page_idx'),
-                score=result.get('score'),
-                document_id=result.get('document_id'),
-                chunk_id=result.get('chunk_id'),
-                global_chunk_id=result.get('global_chunk_id'),
-                chunk_index=result.get('chunk_index'),
-                section_hierarchy=result.get('section_hierarchy'),
-                heading_context=result.get('heading_context'),
-                char_count=result.get('char_count'),
-                word_count=result.get('word_count'),
-                category=result.get('Category'),
-                document_type=result.get('document_type'),
-                ministry=result.get('ministry'),
-                published_date=result.get('published_date'),
-                language=result.get('language')
-            ) for result in results
-        ]
-        
-        return SearchResponse(
-            query=request.query,
-            results=search_results,
-            count=len(search_results),
-            latency_ms=round(search_latency, 2),
-            method=request.method
-        )
-    
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    except Exception as e:
-        import traceback
-        print(f"Search error: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Search failed: {str(e)}"
         )
 
 @app.post("/conversations")
@@ -696,3 +850,45 @@ async def serve_pdf(filename: str):
         )
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
+
+@app.get("/filters/available")
+async def get_available_filters():
+    """Get all available filter values from the collection"""
+    try:
+        milvus_client = get_milvus_client()
+        filters = milvus_client.get_available_filters()
+        
+        print(f"\n📊 Available Filters:")
+        for key, values in filters.items():
+            if isinstance(values, dict):
+                print(f"   {key}: {values}")
+            else:
+                print(f"   {key}: {len(values)} options")
+        
+        return filters
+        
+    except Exception as e:
+        print(f"❌ Error getting filters: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get filters: {str(e)}"
+        )
+
+# Find the RAGRequest class definition and add the missing field
+
+class RAGRequest(BaseModel):
+    """Request model for RAG queries with filters"""
+    query: str
+    conversation_id: Optional[str] = None
+    temperature: float = 0.7
+    top_k: int = 5
+    dense_weight: float = 0.7
+    sparse_weight: float = 0.3
+    method: str = "hybrid"
+    category: Optional[str] = None
+    language: Optional[str] = None
+    document_type: Optional[str] = None
+    document_name: Optional[str] = None
+    ministry: Optional[str] = None  # ✅ ADD THIS LINE
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None

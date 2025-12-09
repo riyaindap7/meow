@@ -6,10 +6,16 @@ class QueryRequest(BaseModel):
     query: str
     top_k: Optional[int] = 5
     method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
-    dense_weight: Optional[float] = 0.7
-    sparse_weight: Optional[float] = 0.3
     filter_expr: Optional[str] = None
     
+    # NEW: Individual filter fields
+    category: Optional[str] = None
+    language: Optional[str] = None
+    document_type: Optional[str] = None
+    document_id: Optional[str] = None  # Filter by document ID (not document_name)
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
 class SearchResult(BaseModel):
     text: str
     source: str = ""
@@ -51,11 +57,12 @@ class RAGRequest(BaseModel):
     sparse_weight: Optional[float] = 0.4
     method: Optional[Literal["vector", "sparse", "hybrid"]] = "hybrid"
     
-    # Filter parameters
+    # ✅ ALL Filter parameters must be here
     category: Optional[str] = None
     language: Optional[str] = None
     document_type: Optional[str] = None
-    document_name: Optional[str] = None
+    document_id: Optional[str] = None  # Filter by document ID (not document_name)
+    ministry: Optional[str] = None  # ✅ VERIFY THIS IS PRESENT
     date_from: Optional[str] = None
     date_to: Optional[str] = None
 
@@ -71,21 +78,15 @@ class RAGResponse(BaseModel):
     method: str = "hybrid"
 
 class HybridSearchRequest(BaseModel):
-    """Advanced hybrid search with filtering options"""
     query: str
-    top_k: Optional[int] = 10
-    dense_weight: Optional[float] = 0.7
-    sparse_weight: Optional[float] = 0.3
-    # Filter options
+    top_k: Optional[int] = 5
     category: Optional[str] = None
     ministry: Optional[str] = None
     document_type: Optional[str] = None
     language: Optional[str] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
-    # Additional filters
-    source_reference: Optional[str] = None
-    semantic_labels: Optional[str] = None
+    document_id: Optional[str] = None  # Filter by document ID
 
 class HealthResponse(BaseModel):
     status: str
